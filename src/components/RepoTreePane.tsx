@@ -1,18 +1,34 @@
-import { memo, useEffect, useMemo } from "react";
-import pierreDarkJson from "@pierre/theme/themes/pierre-dark.json";
-import pierreLightJson from "@pierre/theme/themes/pierre-light.json";
+import { memo, useEffect, useMemo, useRef } from "react";
 import {
   prepareFileTreeInput,
   themeToTreeStyles,
 } from "@pierre/trees";
 import { FileTree, useFileTree, useFileTreeSelection } from "@pierre/trees/react";
-import type { ViewerThemeName } from "./CodeViewer";
 import type { ScanWorkspaceResult } from "../repo/scanWorkspace";
+import type { PierreDiffThemeId } from "../repo/codeViewerThemes";
+import pierreDarkJson from "@pierre/theme/themes/pierre-dark.json";
+import pierreLightJson from "@pierre/theme/themes/pierre-light.json";
 
-/** Scrollbars hidden until scroll; `:host-context` ties tree shadow DOM to `html[data-scrolling]`. */
+type VsCodeThemeJsonLike = {
+  type: string;
+  colors: Record<string, string>;
+};
+
+const TREE_THEME_JSON: Record<PierreDiffThemeId, VsCodeThemeJsonLike> = {
+  "pierre-dark": pierreDarkJson as VsCodeThemeJsonLike,
+  "pierre-light": pierreLightJson as VsCodeThemeJsonLike,
+};
+
+/*
+ * Passed to `@pierre/trees` unsafeCSS — the library wraps this in `@layer unsafe { … }`
+ * (`wrapUnsafeCSS`). Do NOT add another `@layer` here or rules lose the cascade duel.
+ *
+ * Overrides Pierre defaults: scrollbar-gutter stable leaves a perpetual gutter lane;
+ * viewer uses implicit auto gutter + transparent thumb until scroll.
+ */
 const FILE_TREE_OVERLAY_SCROLLBARS_CSS = `
-@layer unsafe {
   [data-file-tree-virtualized-scroll] {
+    scrollbar-gutter: auto;
     scrollbar-width: thin;
     scrollbar-color: transparent transparent;
   }
@@ -24,30 +40,27 @@ const FILE_TREE_OVERLAY_SCROLLBARS_CSS = `
     background: transparent;
   }
   [data-file-tree-virtualized-scroll]::-webkit-scrollbar-thumb {
-    background-color: transparent;
-    border-radius: 5px;
+    background-color: transparent !important;
     border: 3px solid transparent;
     background-clip: content-box;
+    border-radius: 5px;
     transition: background-color 0.25s ease;
   }
+  :host(.codar-tree-scrollbar-reveal) [data-file-tree-virtualized-scroll],
   :host-context(html[data-scrolling="true"]) [data-file-tree-virtualized-scroll] {
     scrollbar-color: var(--scrollbar-thumb-active) transparent;
   }
+  :host(.codar-tree-scrollbar-reveal) [data-file-tree-virtualized-scroll]::-webkit-scrollbar-thumb,
   :host-context(html[data-scrolling="true"]) [data-file-tree-virtualized-scroll]::-webkit-scrollbar-thumb {
-    background-color: var(--scrollbar-thumb-active);
+    background-color: var(--scrollbar-thumb-active) !important;
   }
+  :host(.codar-tree-scrollbar-reveal) [data-file-tree-virtualized-scroll]::-webkit-scrollbar-thumb:hover,
   :host-context(html[data-scrolling="true"]) [data-file-tree-virtualized-scroll]::-webkit-scrollbar-thumb:hover {
-    background-color: var(--scrollbar-thumb-hover);
+    background-color: var(--scrollbar-thumb-hover) !important;
   }
-}
 `;
 
-type VsCodeThemeJson = {
-  type: string;
-  colors: Record<string, string>;
-};
-
-function toTreeThemeInput(raw: VsCodeThemeJson) {
+function toTreeThemeInput(raw: VsCodeThemeJsonLike) {
   return {
     type: raw.type as "dark" | "light",
     colors: raw.colors,
@@ -58,11 +71,11 @@ function toTreeThemeInput(raw: VsCodeThemeJson) {
 
 const TreeBody = memo(function TreeBody({
   scan,
-  viewerTheme,
+  treeChromeTheme,
   onSelectFileRel,
 }: {
   scan: ScanWorkspaceResult;
-  viewerTheme: ViewerThemeName;
+  treeChromeTheme: PierreDiffThemeId;
   onSelectFileRel: (relPath: string | null) => void;
 }) {
   const preparedInput = useMemo(
@@ -75,12 +88,13 @@ const TreeBody = memo(function TreeBody({
   );
 
   const treeHostStyle = useMemo(() => {
-    const raw =
-      viewerTheme === "pierre-light" ? pierreLightJson : pierreDarkJson;
-    return themeToTreeStyles(toTreeThemeInput(raw as VsCodeThemeJson));
-  }, [viewerTheme]);
+    return themeToTreeStyles(
+      toTreeThemeInput(TREE_THEME_JSON[treeChromeTheme]),
+    );
+  }, [treeChromeTheme]);
 
   const readme = scan.readmePath;
+  const treePaneRootRef = useRef<HTMLDivElement | null>(null);
 
   const { model } = useFileTree({
     id: "codar-repo-tree",
@@ -101,26 +115,91 @@ const TreeBody = memo(function TreeBody({
     onSelectFileRel(first);
   }, [selectedPaths, onSelectFileRel]);
 
+  useEffect(() => {
+    const paneRootEl = treePaneRootRef.current;
+    if (!(paneRootEl instanceof HTMLDivElement)) return;
+
+    let hideTimer: ReturnType<typeof setTimeout> | undefined;
+    let rafWatch = 0;
+    let scrollElCleanup: (() => void) | undefined;
+
+    const clearHideTimer = () => {
+      if (hideTimer !== undefined) clearTimeout(hideTimer);
+      hideTimer = undefined;
+    };
+
+    const pulseHost = (host: HTMLElement) => {
+      host.classList.add("codar-tree-scrollbar-reveal");
+      clearHideTimer();
+      hideTimer = setTimeout(() => {
+        hideTimer = undefined;
+        host.classList.remove("codar-tree-scrollbar-reveal");
+      }, 900);
+    };
+
+    function tryAttach(pane: HTMLDivElement): boolean {
+      const host = pane.querySelector("file-tree-container");
+      if (!(host instanceof HTMLElement)) return false;
+      const sr = host.shadowRoot;
+      if (!sr) return false;
+      const scrollEl = sr.querySelector("[data-file-tree-virtualized-scroll]");
+      if (!(scrollEl instanceof HTMLElement)) return false;
+
+      if (scrollElCleanup) scrollElCleanup();
+      scrollElCleanup = undefined;
+
+      const reveal = () => pulseHost(host);
+      scrollEl.addEventListener("scroll", reveal, { passive: true });
+      scrollElCleanup = () => {
+        scrollEl.removeEventListener("scroll", reveal);
+      };
+      return true;
+    }
+
+    let frames = 0;
+    const watch = () => {
+      if (tryAttach(paneRootEl)) return;
+      frames += 1;
+      if (frames < 72) rafWatch = requestAnimationFrame(watch);
+    };
+    rafWatch = requestAnimationFrame(watch);
+
+    return () => {
+      cancelAnimationFrame(rafWatch);
+      scrollElCleanup?.();
+      scrollElCleanup = undefined;
+      clearHideTimer();
+      paneRootEl
+        .querySelector("file-tree-container")
+        ?.classList.remove("codar-tree-scrollbar-reveal");
+    };
+  }, [preparedInput]);
+
   return (
-    <FileTree
-      className="repo-file-tree-host"
-      model={model}
-      style={{
-        flex: 1,
-        minHeight: 0,
-        ...treeHostStyle,
-      }}
-    />
+    <div
+      ref={treePaneRootRef}
+      className="repo-tree-pane-root"
+    >
+      <FileTree
+        className="repo-file-tree-host"
+        model={model}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          ...treeHostStyle,
+        }}
+      />
+    </div>
   );
 });
 
 export const RepoTreePane = memo(function RepoTreePane(props: {
   scan: ScanWorkspaceResult | null;
   workspaceKey: string;
-  viewerTheme: ViewerThemeName;
+  treeChromeTheme: PierreDiffThemeId;
   onSelectFileRel: (relPath: string | null) => void;
 }) {
-  const { scan, onSelectFileRel, workspaceKey, viewerTheme } = props;
+  const { scan, onSelectFileRel, workspaceKey, treeChromeTheme } = props;
   if (!scan || scan.paths.length === 0) {
     return (
       <div className="pane-placeholder">
@@ -132,7 +211,7 @@ export const RepoTreePane = memo(function RepoTreePane(props: {
     <TreeBody
       key={workspaceKey}
       scan={scan}
-      viewerTheme={viewerTheme}
+      treeChromeTheme={treeChromeTheme}
       onSelectFileRel={onSelectFileRel}
     />
   );

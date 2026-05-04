@@ -8,11 +8,19 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
-import type { ViewerThemeName } from "./components/CodeViewer";
+import {
+  CODE_VIEWER_THEME_OPTIONS,
+  codeViewerThemeLabel,
+  isKnownCodeViewerTheme,
+  type CodeViewerThemeId,
+  type CodeViewerThemePick,
+} from "./repo/codeViewerThemes";
 import { FocusMapOverlay } from "./components/FocusMapOverlay";
 import { CodeViewer } from "./components/CodeViewer";
 import { FileSearchPalette } from "./components/FileSearchPalette";
+import { MagitGitPanel } from "./components/MagitGitPanel";
 import { RepoTreePane } from "./components/RepoTreePane";
 import { repoPathToAbsolute } from "./repo/absolutePath";
 import {
@@ -22,6 +30,25 @@ import {
 } from "./repo/scanWorkspace";
 
 const LAST_ROOT_STORAGE_KEY = "codar:last-repo-root";
+const CODE_THEME_PREF_STORAGE_KEY = "codar:code-theme-preference";
+
+function parseCodeThemePick(raw: string | null): CodeViewerThemePick {
+  if (raw === "auto" || raw === null) return "auto";
+  if (typeof raw === "string" && isKnownCodeViewerTheme(raw)) return raw;
+  return "auto";
+}
+
+function useSystemAppearanceLight(): boolean {
+  return useSyncExternalStore(
+    (notify) => {
+      const mq = window.matchMedia("(prefers-color-scheme: light)");
+      mq.addEventListener("change", notify);
+      return () => mq.removeEventListener("change", notify);
+    },
+    () => window.matchMedia("(prefers-color-scheme: light)").matches,
+    () => false,
+  );
+}
 
 /** Shown while `scanWorkspaceRoot` indexes the repository. */
 function WorkspaceIndexingPanel({ context }: { context: "tree" | "viewer" }) {
@@ -71,15 +98,6 @@ function useScrollFlashClass() {
   }, []);
 }
 
-function useSystemTheme(): ViewerThemeName {
-  return useMemo(() => {
-    if (typeof window === "undefined") return "pierre-dark";
-    return window.matchMedia("(prefers-color-scheme: light)").matches
-      ? "pierre-light"
-      : "pierre-dark";
-  }, []);
-}
-
 /** Inputs need Space for typing; tree rows / viewer need chord + arrow scroll without paging. */
 function isSpaceTypingTarget(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
@@ -99,6 +117,7 @@ function useSuppressSpacePagingInTreeAndViewer() {
       const t = e.target;
       if (!(t instanceof Element)) return;
       if (t.closest(".file-palette-backdrop")) return;
+      if (t.closest(".magit-backdrop")) return;
 
       let inViewer = false;
       let inExpandedTreeInner = false;
@@ -155,11 +174,37 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [fileLoading, setFileLoading] = useState(false);
   const [filePaletteOpen, setFilePaletteOpen] = useState(false);
+  const [magitOpen, setMagitOpen] = useState(false);
+  const [codeThemePick, setCodeThemePick] = useState<CodeViewerThemePick>(() => {
+    try {
+      return parseCodeThemePick(
+        localStorage.getItem(CODE_THEME_PREF_STORAGE_KEY),
+      );
+    } catch {
+      return "auto";
+    }
+  });
 
   const lastAutoOpenedRoot = useRef<string | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
   const palettePickFocusViewerPathRef = useRef<string | null>(null);
-  const theme = useSystemTheme();
+  const prefersLightChrome = useSystemAppearanceLight();
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CODE_THEME_PREF_STORAGE_KEY, codeThemePick);
+    } catch {
+      /* ignore */
+    }
+  }, [codeThemePick]);
+
+  const resolvedCodeViewerTheme = useMemo((): CodeViewerThemeId => {
+    if (codeThemePick !== "auto") return codeThemePick;
+    return prefersLightChrome ? "pierre-light" : "pierre-dark";
+  }, [codeThemePick, prefersLightChrome]);
+
+  const treeChromeTheme =
+    prefersLightChrome ? "pierre-light" : "pierre-dark";
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -167,6 +212,19 @@ export default function App() {
       if (e.key?.toLowerCase() !== "k") return;
       e.preventDefault();
       setFilePaletteOpen((o) => !o);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key !== "G") return;
+      if (isSpaceTypingTarget(e.target)) return;
+      e.preventDefault();
+      setMagitOpen((o) => !o);
+      setFilePaletteOpen(false);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -362,6 +420,28 @@ export default function App() {
           </button>
         </form>
         <span className="toolbar-spacer" />
+        <div className="toolbar-theme-picker">
+          <label htmlFor="code-theme-select" className="toolbar-theme-picker-label">
+            Code theme
+          </label>
+          <select
+            id="code-theme-select"
+            className="toolbar-code-theme-select"
+            value={codeThemePick}
+            title="Syntax highlighting theme for the file viewer (@pierre/diffs + Shiki)"
+            onChange={(e) => {
+              const v = e.currentTarget.value;
+              setCodeThemePick(v === "auto" || isKnownCodeViewerTheme(v) ? v : "auto");
+            }}
+          >
+            <option value="auto">Auto (match system)</option>
+            {CODE_VIEWER_THEME_OPTIONS.map((id) => (
+              <option key={id} value={id}>
+                {codeViewerThemeLabel(id)}
+              </option>
+            ))}
+          </select>
+        </div>
         <span
           className="toolbar-palette-hint"
           title="Search files (⌘K or Ctrl+K)"
@@ -369,6 +449,14 @@ export default function App() {
         >
           <kbd>⌘</kbd>
           <kbd>K</kbd>
+        </span>
+        <span
+          className="toolbar-magit-hint"
+          title="Git status (Shift+G)"
+          aria-hidden
+        >
+          <kbd>⇧</kbd>
+          <kbd>G</kbd>
         </span>
         <span
           className={`breadcrumb${indexingWorkspace ? " breadcrumb-indexing" : ""}`}
@@ -413,7 +501,7 @@ export default function App() {
               <RepoTreePane
                 scan={scan}
                 workspaceKey={rootPath ?? ""}
-                viewerTheme={theme}
+                treeChromeTheme={treeChromeTheme}
                 onSelectFileRel={onSelectFileRel}
               />
             )}
@@ -442,7 +530,7 @@ export default function App() {
             <CodeViewer
               relativePath={selectedRel}
               contents={fileContents}
-              theme={theme}
+              theme={resolvedCodeViewerTheme}
             />
           ) : (
             <div className="pane-placeholder">
@@ -457,7 +545,7 @@ export default function App() {
       </div>
 
       <FocusMapOverlay
-        disabled={filePaletteOpen}
+        disabled={filePaletteOpen || magitOpen}
         landmarksRootRef={shellRef}
       />
 
@@ -469,6 +557,12 @@ export default function App() {
           palettePickFocusViewerPathRef.current = path;
           onSelectFileRel(path);
         }}
+      />
+
+      <MagitGitPanel
+        open={magitOpen}
+        onClose={() => setMagitOpen(false)}
+        rootPath={rootPath}
       />
     </div>
   );

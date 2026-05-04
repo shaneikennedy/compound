@@ -1,7 +1,9 @@
 import { memo } from "react";
 import { File } from "@pierre/diffs/react";
+import type { CodeViewerThemeId } from "../repo/codeViewerThemes";
 
-export type ViewerThemeName = "pierre-dark" | "pierre-light";
+/** Valid @pierre/diffs `File` theme id (alias for external reference). */
+export type ViewerThemeName = CodeViewerThemeId;
 
 export const CodeViewer = memo(function CodeViewer({
   relativePath,
@@ -10,7 +12,7 @@ export const CodeViewer = memo(function CodeViewer({
 }: {
   relativePath: string;
   contents: string;
-  theme: ViewerThemeName;
+  theme: CodeViewerThemeId;
 }) {
   const basename = relativePath.split("/").pop() ?? relativePath;
   return (
