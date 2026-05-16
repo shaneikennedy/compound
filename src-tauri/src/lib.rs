@@ -57,35 +57,6 @@ fn git_clone_repo(url: String) -> Result<String, String> {
         .ok_or_else(|| "Clone path contained invalid Unicode.".into())
 }
 
-// —— Magit-style status buffer (read-only) ——
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MagitNameStatusEntry {
-    pub status: String,
-    pub path: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MagitCommitLine {
-    pub hash: String,
-    pub subject: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MagitSnapshot {
-    pub ok: bool,
-    pub error: Option<String>,
-    pub branch_label: Option<String>,
-    pub head_line: Option<String>,
-    pub recent_commits: Vec<MagitCommitLine>,
-    pub staged: Vec<MagitNameStatusEntry>,
-    pub unstaged: Vec<MagitNameStatusEntry>,
-    pub untracked: Vec<String>,
-}
-
 fn run_git_stdout(repo_root: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .current_dir(repo_root)
@@ -104,130 +75,246 @@ fn run_git_stdout(repo_root: &str, args: &[&str]) -> Result<String, String> {
     }
 }
 
-fn parse_name_status_block(text: &str) -> Vec<MagitNameStatusEntry> {
-    let mut v = Vec::new();
+fn validate_workspace_dir(root_path: &str) -> Result<&str, String> {
+    let trimmed = root_path.trim();
+    if trimmed.is_empty() {
+        return Err("No workspace folder.".into());
+    }
+    let path = Path::new(trimmed);
+    if !path.is_dir() {
+        return Err("Workspace is not a directory on disk.".into());
+    }
+    Ok(trimmed)
+}
+
+fn ensure_git_worktree(root: &str) -> Result<(), String> {
+    match run_git_stdout(root, &["rev-parse", "--is-inside-work-tree"]) {
+        Ok(s) if s.trim() == "true" => Ok(()),
+        Ok(_) => Err("Not a git working tree.".into()),
+        Err(e) => Err(e),
+    }
+}
+
+fn git_rev_verify(repo_root: &str, git_ref: &str) -> Result<(), String> {
+    let r = git_ref.trim();
+    if r.is_empty() {
+        return Err("Git ref is empty.".into());
+    }
+    if r.starts_with('-') || r.contains([' ', '\t', '\n', '\r']) {
+        return Err("Invalid git ref.".into());
+    }
+    run_git_stdout(repo_root, &["rev-parse", "--verify", &format!("{r}^{{}}")]).map(|_| ())
+}
+
+fn validate_repo_rel_path(path: &str) -> Result<(), String> {
+    let p = path.trim();
+    if p.is_empty() {
+        return Err("Path is empty.".into());
+    }
+    if p.contains("..") || p.starts_with('/') || p.starts_with('\\') {
+        return Err("Invalid path.".into());
+    }
+    Ok(())
+}
+
+// —— Branch comparison (browse vs diff) ——
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchList {
+    pub ok: bool,
+    pub error: Option<String>,
+    pub current: Option<String>,
+    pub branches: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchDiffFileEntry {
+    /// Path key for the file tree (`new` side for renames/copies).
+    pub path: String,
+    /// one of: added | modified | deleted | renamed
+    pub status: String,
+    pub old_path: Option<String>,
+}
+
+#[tauri::command]
+fn git_branch_list(root_path: String) -> GitBranchList {
+    let root = match validate_workspace_dir(&root_path) {
+        Ok(r) => r,
+        Err(e) => {
+            return GitBranchList {
+                ok: false,
+                error: Some(e),
+                current: None,
+                branches: Vec::new(),
+            }
+        }
+    };
+    if let Err(e) = ensure_git_worktree(root) {
+        return GitBranchList {
+            ok: false,
+            error: Some(e),
+            current: None,
+            branches: Vec::new(),
+        };
+    }
+
+    let current = run_git_stdout(root, &["branch", "--show-current"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let heads_raw =
+        match run_git_stdout(root, &["for-each-ref", "--format=%(refname:short)", "refs/heads/"]) {
+            Ok(s) => s,
+            Err(e) => {
+                return GitBranchList {
+                    ok: false,
+                    error: Some(e),
+                    current,
+                    branches: Vec::new(),
+                }
+            }
+        };
+
+    let mut names: Vec<String> = heads_raw
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect();
+
+    if let Ok(remotes_raw) = run_git_stdout(
+        root,
+        &["for-each-ref", "--format=%(refname:short)", "refs/remotes/"],
+    ) {
+        for line in remotes_raw.lines() {
+            let t = line.trim();
+            if !t.is_empty() {
+                names.push(t.to_string());
+            }
+        }
+    }
+
+    if !names.iter().any(|b| b == "HEAD") {
+        names.push("HEAD".to_string());
+    }
+
+    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    names.dedup();
+
+    GitBranchList {
+        ok: true,
+        error: None,
+        current,
+        branches: names,
+    }
+}
+
+fn map_name_status_to_entry(parts: &[&str]) -> Option<BranchDiffFileEntry> {
+    if parts.len() < 2 {
+        return None;
+    }
+    let status_raw = parts[0].trim();
+    let head = status_raw.chars().next()?;
+
+    let (path, old_path, status) = if (head == 'R' || head == 'C') && parts.len() >= 3 {
+        let old_p = parts[1].to_string();
+        let new_p = parts[2].to_string();
+        (
+            new_p,
+            Some(old_p),
+            "renamed".to_string(),
+        )
+    } else if head == 'A' {
+        (parts[1].to_string(), None, "added".to_string())
+    } else if head == 'D' {
+        (parts[1].to_string(), None, "deleted".to_string())
+    } else if head == 'M' || head == 'T' || head == 'U' {
+        (parts[1].to_string(), None, "modified".to_string())
+    } else {
+        (parts[1].to_string(), None, "modified".to_string())
+    };
+
+    Some(BranchDiffFileEntry {
+        path,
+        status,
+        old_path,
+    })
+}
+
+/// Files changed between `base_ref` and `head_ref` (two-dot tree diff).
+#[tauri::command]
+fn git_branch_diff_files(
+    root_path: String,
+    base_ref: String,
+    head_ref: String,
+) -> Result<Vec<BranchDiffFileEntry>, String> {
+    let root = validate_workspace_dir(&root_path)?;
+    ensure_git_worktree(root)?;
+    let b = base_ref.trim();
+    let h = head_ref.trim();
+    git_rev_verify(root, b)?;
+    git_rev_verify(root, h)?;
+
+    let text = run_git_stdout(
+        root,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--name-status",
+            "-M",
+            "-C",
+            b,
+            h,
+        ],
+    )?;
+
+    let mut out = Vec::new();
     for line in text.lines() {
         if line.is_empty() {
             continue;
         }
         let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() < 2 {
-            continue;
+        if let Some(entry) = map_name_status_to_entry(&parts) {
+            out.push(entry);
         }
-        let status = parts[0].to_string();
-        let path =
-            if parts.len() >= 3 && (status.starts_with('R') || status.starts_with('C')) {
-                format!("{} → {}", parts[1], parts[2])
-            } else {
-                parts[1].to_string()
-            };
-        v.push(MagitNameStatusEntry { status, path });
     }
-    v
+    Ok(out)
 }
 
-fn parse_recent_log(text: &str) -> Vec<MagitCommitLine> {
-    text.lines()
-        .filter(|l| !l.is_empty())
-        .filter_map(|line| line.find('\t').map(|i| MagitCommitLine {
-            hash: line[..i].trim().to_string(),
-            subject: line[i + 1..].trim_end().to_string(),
-        }))
-        .collect()
-}
-
-fn snapshot_error(msg: impl Into<String>) -> MagitSnapshot {
-    MagitSnapshot {
-        ok: false,
-        error: Some(msg.into()),
-        branch_label: None,
-        head_line: None,
-        recent_commits: Vec::new(),
-        staged: Vec::new(),
-        unstaged: Vec::new(),
-        untracked: Vec::new(),
-    }
-}
-
-/// Working-tree snapshot for Magit-style UI (`git diff`, `branch`, recent log).
+/// Unified diff for a single path between two refs (path is repo-relative, POSIX).
 #[tauri::command]
-fn git_magit_snapshot(root_path: String) -> MagitSnapshot {
-    let trimmed = root_path.trim().to_owned();
-    if trimmed.is_empty() {
-        return snapshot_error("No workspace folder.");
-    }
-    let path = Path::new(&trimmed);
-    if !path.is_dir() {
-        return snapshot_error("Workspace is not a directory on disk.");
-    }
-    let root = trimmed.as_str();
+fn git_branch_diff_patch(
+    root_path: String,
+    base_ref: String,
+    head_ref: String,
+    path: String,
+) -> Result<String, String> {
+    let root = validate_workspace_dir(&root_path)?;
+    ensure_git_worktree(root)?;
+    validate_repo_rel_path(&path)?;
+    let b = base_ref.trim();
+    let h = head_ref.trim();
+    git_rev_verify(root, b)?;
+    git_rev_verify(root, h)?;
 
-    match run_git_stdout(root, &["rev-parse", "--is-inside-work-tree"]) {
-        Ok(s) if s.trim() == "true" => {}
-        Ok(_) => return snapshot_error("Not a git working tree."),
-        Err(e) => return snapshot_error(e),
-    }
-
-    let branch_label =
-        match run_git_stdout(root, &["branch", "--show-current"]) {
-            Ok(s) => {
-                let t = s.trim().to_string();
-                if t.is_empty() {
-                    run_git_stdout(root, &["describe", "--tags", "--always"])
-                        .ok()
-                        .map(|d| d.trim().to_string())
-                } else {
-                    Some(t)
-                }
-            }
-            Err(_) => run_git_stdout(root, &["describe", "--tags", "--always"]).ok(),
-        };
-
-    let head_line = run_git_stdout(root, &["log", "-1", "--pretty=format:%h %s"])
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
-    let staged = run_git_stdout(root, &["diff", "--cached", "--name-status"])
-        .map(|t| parse_name_status_block(&t))
-        .unwrap_or_default();
-
-    let unstaged = run_git_stdout(root, &["diff", "--name-status"])
-        .map(|t| parse_name_status_block(&t))
-        .unwrap_or_default();
-
-    let untracked_raw =
-        run_git_stdout(root, &["ls-files", "-o", "--exclude-standard"]).unwrap_or_default();
-    let untracked = untracked_raw
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect::<Vec<_>>();
-
-    let log_text = run_git_stdout(
+    run_git_stdout(
         root,
         &[
             "-c",
             "core.quotepath=false",
-            "log",
-            "-20",
-            "--pretty=format:%h\t%s%n",
+            "diff",
+            "--no-ext-diff",
+            "-U3",
+            b,
+            h,
+            "--",
+            path.trim(),
         ],
     )
-    .unwrap_or_default();
-    let recent_commits = parse_recent_log(&log_text);
-
-    MagitSnapshot {
-        ok: true,
-        error: None,
-        branch_label,
-        head_line,
-        recent_commits,
-        staged,
-        unstaged,
-        untracked,
-    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -238,7 +325,9 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             git_clone_repo,
-            git_magit_snapshot
+            git_branch_list,
+            git_branch_diff_files,
+            git_branch_diff_patch
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

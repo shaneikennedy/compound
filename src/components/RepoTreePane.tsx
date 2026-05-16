@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef } from "react";
 import {
   prepareFileTreeInput,
   themeToTreeStyles,
+  type GitStatusEntry,
 } from "@pierre/trees";
 import { FileTree, useFileTree, useFileTreeSelection } from "@pierre/trees/react";
 import type { ScanWorkspaceResult } from "../repo/scanWorkspace";
@@ -60,6 +61,17 @@ const FILE_TREE_OVERLAY_SCROLLBARS_CSS = `
   }
 `;
 
+/** Stronger git lane colors in diff mode (green / yellow / red / orange). */
+const DIFF_MODE_TREE_GIT_COLORS_CSS = `
+  :host {
+    --trees-git-added-color-override: oklch(58% 0.16 145);
+    --trees-git-modified-color-override: oklch(78% 0.16 95);
+    --trees-git-deleted-color-override: oklch(62% 0.2 25);
+    --trees-git-renamed-color-override: oklch(70% 0.17 55);
+  }
+`;
+
+
 function toTreeThemeInput(raw: VsCodeThemeJsonLike) {
   return {
     type: raw.type as "dark" | "light",
@@ -73,19 +85,31 @@ const TreeBody = memo(function TreeBody({
   scan,
   treeChromeTheme,
   onSelectFileRel,
+  diffMode,
+  treeInstanceId,
 }: {
   scan: ScanWorkspaceResult;
   treeChromeTheme: PierreDiffThemeId;
   onSelectFileRel: (relPath: string | null) => void;
+  diffMode: {
+    paths: string[];
+    gitStatus: GitStatusEntry[];
+    preferredSelectedRel: string | null;
+  } | null;
+  treeInstanceId: string;
 }) {
   const preparedInput = useMemo(
     () =>
-      prepareFileTreeInput(scan.paths, {
+      prepareFileTreeInput(diffMode ? diffMode.paths : scan.paths, {
         flattenEmptyDirectories: true,
         sort: "default",
       }),
-    [scan.paths],
+    [scan.paths, diffMode],
   );
+
+  const treeUnsafeCss = diffMode
+    ? `${FILE_TREE_OVERLAY_SCROLLBARS_CSS}\n${DIFF_MODE_TREE_GIT_COLORS_CSS}`
+    : FILE_TREE_OVERLAY_SCROLLBARS_CSS;
 
   const treeHostStyle = useMemo(() => {
     return themeToTreeStyles(
@@ -96,15 +120,30 @@ const TreeBody = memo(function TreeBody({
   const readme = scan.readmePath;
   const treePaneRootRef = useRef<HTMLDivElement | null>(null);
 
+  const filePathsOnly = useMemo(() => {
+    const p = diffMode?.paths ?? scan.paths;
+    return p.filter((x) => !x.endsWith("/"));
+  }, [diffMode, scan.paths]);
+
+  const initialSelectedPaths = useMemo(() => {
+    if (diffMode) {
+      const pref = diffMode.preferredSelectedRel;
+      if (pref && filePathsOnly.includes(pref)) return [pref];
+      return filePathsOnly.length > 0 ? [filePathsOnly[0]!] : [];
+    }
+    return readme ? [readme] : [];
+  }, [diffMode, readme, filePathsOnly]);
+
   const { model } = useFileTree({
-    id: "codar-repo-tree",
+    id: treeInstanceId,
     preparedInput,
-    initialExpansion: "closed",
-    initialSelectedPaths: readme ? [readme] : [],
+    initialExpansion: diffMode ? "open" : "closed",
+    initialSelectedPaths,
+    gitStatus: diffMode?.gitStatus,
     search: true,
     density: "compact",
     icons: "standard",
-    unsafeCSS: FILE_TREE_OVERLAY_SCROLLBARS_CSS,
+    unsafeCSS: treeUnsafeCss,
   });
 
   const selectedPaths = useFileTreeSelection(model);
@@ -198,8 +237,14 @@ export const RepoTreePane = memo(function RepoTreePane(props: {
   workspaceKey: string;
   treeChromeTheme: PierreDiffThemeId;
   onSelectFileRel: (relPath: string | null) => void;
+  diffMode?: {
+    paths: string[];
+    gitStatus: GitStatusEntry[];
+    preferredSelectedRel: string | null;
+    instanceKey: string;
+  } | null;
 }) {
-  const { scan, onSelectFileRel, workspaceKey, treeChromeTheme } = props;
+  const { scan, onSelectFileRel, workspaceKey, treeChromeTheme, diffMode } = props;
   if (!scan || scan.paths.length === 0) {
     return (
       <div className="pane-placeholder">
@@ -207,12 +252,23 @@ export const RepoTreePane = memo(function RepoTreePane(props: {
       </div>
     );
   }
+
+  const mountKey = diffMode
+    ? `${workspaceKey}|diff|${diffMode.instanceKey}`
+    : workspaceKey;
+
+  const treeInstanceId = diffMode
+    ? `codar-diff-tree:${diffMode.instanceKey}`
+    : "codar-repo-tree";
+
   return (
     <TreeBody
-      key={workspaceKey}
+      key={mountKey}
       scan={scan}
       treeChromeTheme={treeChromeTheme}
       onSelectFileRel={onSelectFileRel}
+      diffMode={diffMode ?? null}
+      treeInstanceId={treeInstanceId}
     />
   );
 });

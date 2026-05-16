@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border-subtle, rgba(0, 0, 0, 0.08));
+  }
+}

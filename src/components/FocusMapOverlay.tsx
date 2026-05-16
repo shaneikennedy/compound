@@ -19,7 +19,6 @@ const QWERTY_HINT_ROW = Array.from(
 function isTypingSurface(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   if (target.closest(".file-palette-backdrop")) return true;
-  if (target.closest(".magit-backdrop")) return true;
   const el = target as HTMLElement;
   const tag = el.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
@@ -133,7 +132,6 @@ function focusFirstFocusable(scope: DocumentFragment | Element): boolean {
     const el = candidates[i]!;
     if (isSubtreeHidden(el)) continue;
     if (el.closest(".file-palette-backdrop")) continue;
-    if (el.closest(".magit-backdrop")) continue;
     el.focus({ preventScroll: true });
     if (document.activeElement === el) return true;
     try {
@@ -212,7 +210,6 @@ export function FocusMapOverlay({
       /* Palette mode: chord disabled separately via `disabled`; never double-space inside palette */
       const t = e.target;
       if (t instanceof Element && t.closest(".file-palette-backdrop")) return;
-      if (t instanceof Element && t.closest(".magit-backdrop")) return;
 
       const now = Date.now();
       if (now - lastSpaceAt.current < DOUBLE_SPACE_MS) {
