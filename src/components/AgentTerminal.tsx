@@ -26,14 +26,27 @@ function focusTerminalAfterShellUiSettles(
   });
 }
 
+function shellInputNewline(): string {
+  /** PowerShell favors CRLF for delivered input; POSIX shells accept `\n`. */
+  if (
+    typeof navigator !== "undefined" &&
+    navigator.userAgent.includes("Windows")
+  )
+    return "\r\n";
+  return "\n";
+}
+
 export function AgentTerminal({
   rootPath,
   lightChrome,
   visible,
+  startupShellLine,
 }: {
   rootPath: string;
   lightChrome: boolean;
   visible: boolean;
+  /** If set after the PTY opens, forwarded to the shell as one executed line (default-agent preference). */
+  startupShellLine?: string | null;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -126,6 +139,21 @@ export function AgentTerminal({
           () => !dead && visibleRef.current,
           term,
         );
+
+        const line = startupShellLine?.trim();
+        if (line) {
+          await new Promise<void>((resolve) =>
+            window.setTimeout(resolve, 80),
+          );
+          if (!dead) {
+            const payload = new TextEncoder().encode(
+              `${line}${shellInputNewline()}`,
+            );
+            await invoke("terminal_write", {
+              data: Array.from(payload),
+            }).catch(() => {});
+          }
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         term.writeln(`\r\n\x1b[31mCould not start shell: ${msg}\x1b[0m\r\n`);
@@ -152,7 +180,7 @@ export function AgentTerminal({
       void invoke("terminal_kill").catch(() => {});
       term.dispose();
     };
-  }, [rootPath, lightChrome]);
+  }, [rootPath, lightChrome, startupShellLine]);
 
   useEffect(() => {
     if (!visible) return;

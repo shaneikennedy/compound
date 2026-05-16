@@ -18,6 +18,11 @@ import {
   codeViewerThemeLabel,
   isKnownCodeViewerTheme,
 } from "../repo/codeViewerThemes";
+import {
+  DEFAULT_AGENT_CLI_OPTIONS,
+  type DefaultAgentCliId,
+  isDefaultAgentCliId,
+} from "../repo/defaultAgentPreference";
 
 export function PreferencesDialog({
   open,
@@ -25,6 +30,8 @@ export function PreferencesDialog({
   projectRoot,
   codeThemePick,
   onThemeChange,
+  defaultAgentCli,
+  onDefaultAgentCliChange,
   onSwitchProject,
 }: {
   open: boolean;
@@ -32,6 +39,8 @@ export function PreferencesDialog({
   projectRoot: string | null;
   codeThemePick: CodeViewerThemePick;
   onThemeChange: (v: CodeViewerThemePick) => void;
+  defaultAgentCli: DefaultAgentCliId;
+  onDefaultAgentCliChange: (v: DefaultAgentCliId) => void;
   onSwitchProject: () => void;
 }) {
   return (
@@ -39,8 +48,8 @@ export function PreferencesDialog({
       <DialogContent aria-describedby="prefs-desc">
         <DialogTitle>Preferences</DialogTitle>
         <DialogDescription id="prefs-desc">
-          Code and diff syntax theme; switch repository when a project is open.
-          Press ⌘, or Ctrl+, to toggle this dialog.
+          Syntax theme and agent terminal defaults; switch repository when a
+          project is open. Press ⌘, or Ctrl+, to toggle this dialog.
         </DialogDescription>
 
         <div className="mt-4 flex flex-col gap-5">
@@ -74,6 +83,42 @@ export function PreferencesDialog({
             </Select>
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
               Shiki themes for the code and diff viewers.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-1.5 border-t border-zinc-200 pt-5 dark:border-zinc-800">
+            <span className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+              Default CLI in Agent tab
+            </span>
+            <Select
+              value={defaultAgentCli}
+              onValueChange={(v) => {
+                onDefaultAgentCliChange(
+                  isDefaultAgentCliId(v) ? v : "none",
+                );
+              }}
+            >
+              <SelectTrigger
+                id="prefs-default-agent-cli-select"
+                className="h-9 w-full max-w-none text-sm"
+                aria-label="Default agent CLI terminal command"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="z-[600]">
+                {DEFAULT_AGENT_CLI_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.id} value={opt.id}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              {
+                DEFAULT_AGENT_CLI_OPTIONS.find(
+                  (o) => o.id === defaultAgentCli,
+                )?.description
+              }
             </p>
           </div>
 

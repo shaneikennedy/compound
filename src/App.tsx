@@ -12,6 +12,12 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  DEFAULT_AGENT_CLI_STORAGE_KEY,
+  defaultAgentStartupCommand,
+  parseDefaultAgentCliId,
+  type DefaultAgentCliId,
+} from "./repo/defaultAgentPreference";
+import {
   isKnownCodeViewerTheme,
   type CodeViewerThemeId,
   type CodeViewerThemePick,
@@ -280,6 +286,17 @@ export default function App() {
       return "auto";
     }
   });
+  const [defaultAgentCli, setDefaultAgentCli] = useState<DefaultAgentCliId>(
+    () => {
+      try {
+        return parseDefaultAgentCliId(
+          localStorage.getItem(DEFAULT_AGENT_CLI_STORAGE_KEY),
+        );
+      } catch {
+        return "none";
+      }
+    },
+  );
   const [preferencesOpen, setPreferencesOpen] = useState(false);
 
   const activeTabIdRef = useRef<string | null>(null);
@@ -320,6 +337,14 @@ export default function App() {
       /* ignore */
     }
   }, [codeThemePick]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DEFAULT_AGENT_CLI_STORAGE_KEY, defaultAgentCli);
+    } catch {
+      /* ignore */
+    }
+  }, [defaultAgentCli]);
 
   const resolvedCodeViewerTheme = useMemo((): CodeViewerThemeId => {
     if (codeThemePick !== "auto") return codeThemePick;
@@ -966,6 +991,8 @@ export default function App() {
           projectRoot={null}
           codeThemePick={codeThemePick}
           onThemeChange={setCodeThemePick}
+          defaultAgentCli={defaultAgentCli}
+          onDefaultAgentCliChange={setDefaultAgentCli}
           onSwitchProject={switchProject}
         />
         <FocusMapOverlay
@@ -988,6 +1015,8 @@ export default function App() {
           projectRoot={projectRoot}
           codeThemePick={codeThemePick}
           onThemeChange={setCodeThemePick}
+          defaultAgentCli={defaultAgentCli}
+          onDefaultAgentCliChange={setDefaultAgentCli}
           onSwitchProject={switchProject}
         />
       </div>
@@ -1294,6 +1323,7 @@ export default function App() {
                 rootPath={agentShellCwd}
                 lightChrome={prefersLightChrome}
                 visible={agentViewFront}
+                startupShellLine={defaultAgentStartupCommand(defaultAgentCli)}
               />
             </section>
           </div>
@@ -1345,6 +1375,8 @@ export default function App() {
         projectRoot={projectRoot}
         codeThemePick={codeThemePick}
         onThemeChange={setCodeThemePick}
+        defaultAgentCli={defaultAgentCli}
+        onDefaultAgentCliChange={setDefaultAgentCli}
         onSwitchProject={switchProject}
       />
 
