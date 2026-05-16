@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "sync-app-icon": "npm run generate:logo --prefix website && tauri icon website/src/assets/compound.png"
   },
   "dependencies": {
     "@fontsource/geist-sans": "^5.2.5",
