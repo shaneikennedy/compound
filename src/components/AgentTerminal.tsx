@@ -73,6 +73,15 @@ export function AgentTerminal({
     termRef.current = term;
     fit.fit();
 
+    /** xterm/WKWebView can report odd `target` paths; still stop Space from reaching `window` for the focus-map chord. */
+    const stopSpaceBubbleToWindow = (e: KeyboardEvent) => {
+      if (e.key !== " ") return;
+      const active = document.activeElement;
+      if (!active || !el.contains(active)) return;
+      e.stopPropagation();
+    };
+    el.addEventListener("keydown", stopSpaceBubbleToWindow);
+
     const ro = new ResizeObserver(() => {
       fit.fit();
     });
@@ -133,6 +142,7 @@ export function AgentTerminal({
 
     return () => {
       dead = true;
+      el.removeEventListener("keydown", stopSpaceBubbleToWindow);
       termRef.current = null;
       fitRef.current = null;
       ro.disconnect();
@@ -184,8 +194,6 @@ export function AgentTerminal({
       ref={hostRef}
       className="agent-terminal-host"
       data-compound-agent-terminal=""
-      data-focus-landmark=""
-      data-focus-map-label="Agent terminal"
       tabIndex={-1}
     />
   );

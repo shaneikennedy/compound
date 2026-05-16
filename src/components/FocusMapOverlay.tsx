@@ -15,6 +15,20 @@ const QWERTY_HINT_ROW = Array.from(
   "qwertyuiopasdfghjkl",
 ) as readonly string[];
 
+/** xterm keeps focus on an internal control; `target` is not always reliable in WKWebView. */
+function isKeyboardEventFromAgentTerminal(e: KeyboardEvent): boolean {
+  const active = document.activeElement;
+  if (active instanceof Element && active.closest("[data-compound-agent-terminal]")) {
+    return true;
+  }
+  for (const n of e.composedPath()) {
+    if (n instanceof Element && n.closest("[data-compound-agent-terminal]")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** True when Space should type (do not treat as focus-map chord). */
 function isTypingSurface(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
@@ -210,6 +224,9 @@ export function FocusMapOverlay({
       /* Palette mode: chord disabled separately via `disabled`; never double-space inside palette */
       const t = e.target;
       if (t instanceof Element && t.closest(".file-palette-backdrop")) return;
+      if (isKeyboardEventFromAgentTerminal(e)) {
+        return;
+      }
 
       const now = Date.now();
       if (now - lastSpaceAt.current < DOUBLE_SPACE_MS) {
