@@ -1,7 +1,20 @@
-# Tauri + React + Typescript
+# Compound
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+Desktop workspace app for **local Git repositories**: browse files with syntax highlighting, review **uncommitted changes** against `HEAD`, and work with an **agent** session (terminal + optional worktrees). Built with [Tauri 2](https://tauri.app/), React, and Vite.
 
-## Recommended IDE Setup
+## Install / run from source
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+**Requirements:** [Node.js](https://nodejs.org/), [Rust](https://rustup.rs/), and the usual [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+
+```bash
+npm install
+npm run tauri dev
+```
+
+Production installers/binaries:
+
+```bash
+npm run tauri build
+```
+
+Outputs appear under `src-tauri/target/release/bundle/` (platform-dependent).
