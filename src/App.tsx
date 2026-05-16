@@ -385,6 +385,9 @@ export default function App() {
       if (!(e.metaKey || e.ctrlKey)) return;
       if (e.key?.toLowerCase() !== "k") return;
       if (!activeTabId) return;
+      const tab = tabs.find((t) => t.id === activeTabId);
+      if (!tab || tab.viewMode !== "browse") return;
+      if (preferencesShortcutIgnoreTypingTarget(e.target)) return;
       e.preventDefault();
       setTabs((ts) =>
         ts.map((t) =>
@@ -396,7 +399,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeTabId]);
+  }, [activeTabId, tabs]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1149,10 +1152,15 @@ export default function App() {
               type="button"
               variant="ghost"
               size="sm"
-              title="Search files — ⌘K or Ctrl+K"
+              disabled={!projectRoot || viewMode !== "browse"}
+              title={
+                viewMode !== "browse"
+                  ? "Search files is only available in Browse mode"
+                  : "Search files — ⌘K or Ctrl+K"
+              }
               aria-label="Search files"
               onClick={() => {
-                if (!activeTabId) return;
+                if (!activeTabId || viewMode !== "browse") return;
                 patchTab(activeTabId, {
                   filePaletteOpen: !filePaletteOpen,
                 });

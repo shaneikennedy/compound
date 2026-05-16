@@ -1,10 +1,10 @@
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import {
   prepareFileTreeInput,
   themeToTreeStyles,
   type GitStatusEntry,
 } from "@pierre/trees";
-import { FileTree, useFileTree, useFileTreeSelection } from "@pierre/trees/react";
+import { FileTree, useFileTree } from "@pierre/trees/react";
 import type { ScanWorkspaceResult } from "../repo/scanWorkspace";
 import type { PierreDiffThemeId } from "../repo/codeViewerThemes";
 import pierreDarkJson from "@pierre/theme/themes/pierre-dark.json";
@@ -122,6 +122,8 @@ const TreeBody = memo(function TreeBody({
 
   const readme = scan.readmePath;
   const treePaneRootRef = useRef<HTMLDivElement | null>(null);
+  const onSelectRef = useRef(onSelectFileRel);
+  onSelectRef.current = onSelectFileRel;
 
   const filePathsOnly = useMemo(() => {
     const p = diffMode?.paths ?? scan.paths;
@@ -147,20 +149,34 @@ const TreeBody = memo(function TreeBody({
     density: "compact",
     icons: "standard",
     unsafeCSS: treeUnsafeCss,
+    onSelectionChange(paths) {
+      const raw = paths[0];
+      const p = raw && !raw.endsWith("/") ? raw : null;
+      onSelectRef.current(p);
+    },
   });
 
-  const selectedPaths = useFileTreeSelection(model);
+  useLayoutEffect(() => {
+    const selected = model.getSelectedPaths();
+    if (committedSelectedRel === null) {
+      if (selected.length === 0) return;
+      for (const p of [...selected]) {
+        model.getItem(p)?.deselect();
+      }
+      return;
+    }
+    const want = committedSelectedRel;
+    if (!filePathsOnly.includes(want)) return;
+    if (selected.length === 1 && selected[0] === want) return;
 
-  const primarySelectedPath =
-    selectedPaths[0] && !selectedPaths[0].endsWith("/")
-      ? selectedPaths[0]
-      : null;
-
-  useEffect(() => {
-    if (!primarySelectedPath) return;
-    if (primarySelectedPath === committedSelectedRel) return;
-    onSelectFileRel(primarySelectedPath);
-  }, [primarySelectedPath, committedSelectedRel, onSelectFileRel]);
+    const item = model.getItem(want);
+    if (!item) return;
+    for (const p of [...model.getSelectedPaths()]) {
+      if (p !== want) model.getItem(p)?.deselect();
+    }
+    if (!item.isSelected()) item.select();
+    item.focus();
+  }, [committedSelectedRel, model, filePathsOnly]);
 
   useEffect(() => {
     const paneRootEl = treePaneRootRef.current;
