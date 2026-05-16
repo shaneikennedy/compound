@@ -1,5 +1,6 @@
 import Image from "next/image";
 import compoundHero from "@/assets/compound.png";
+import { InstallCommand } from "@/components/install-command";
 
 function IconAgents() {
   return (
@@ -97,6 +98,9 @@ export default function Home() {
             <a href="#features" className="transition-colors hover:text-zinc-100">
               Features
             </a>
+            <a href="#install" className="transition-colors hover:text-zinc-100">
+              Install
+            </a>
           </nav>
         </div>
       </header>
@@ -120,6 +124,10 @@ export default function Home() {
                 <span className="text-emerald-400">●</span> agents · reviews ·
                 exploration
               </span>
+            </div>
+
+            <div id="install" className="mt-10 scroll-mt-24 md:text-left">
+              <InstallCommand />
             </div>
           </div>
 
