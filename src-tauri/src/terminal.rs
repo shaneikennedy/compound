@@ -38,17 +38,11 @@ fn build_shell_command(cwd: &Path) -> CommandBuilder {
 
 #[cfg(not(windows))]
 fn build_shell_command(cwd: &Path) -> CommandBuilder {
-    let exec = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let mut cmd = CommandBuilder::new(&exec);
+    // `new_default_prog` runs the passwd/default shell with argv0 `-basename` (login shell),
+    // so macOS `/etc/zprofile` / `path_helper` and `~/.zprofile` run like in Terminal.app.
+    let mut cmd = CommandBuilder::new_default_prog();
     cmd.cwd(cwd);
-    let lower = exec.to_lowercase();
-    if lower.contains("bash")
-        || lower.contains("zsh")
-        || lower.contains("fish")
-        || lower.contains("ksh")
-    {
-        cmd.arg("-i");
-    }
+    cmd.env("TERM", "xterm-256color");
     cmd
 }
 
