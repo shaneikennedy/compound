@@ -421,9 +421,44 @@ html:not([data-scrolling="true"]) *::-webkit-scrollbar-thumb:hover {
   background: var(--app-bg);
 }
 
-.app-body--agent {
+/**
+ * Terminal stays mounted underneath browse/diff. Use `display: block` — not grid/flex —
+ * so this flex-item gets height from `.app-shell` while both layers are absolutely
+ * positioned (avoids collapsing when all flex children are out-of-flow).
+ */
+.app-body--stacked {
+  position: relative;
+  display: block;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.app-stack-layer {
+  position: absolute;
+  inset: 0;
   display: flex;
   min-height: 0;
+  min-width: 0;
+}
+
+.app-stack-browse {
+  flex-direction: row;
+}
+
+.app-stack-agent {
+  flex-direction: column;
+}
+
+.app-stack-layer--front {
+  z-index: 2;
+  visibility: visible;
+}
+
+.app-stack-layer--back {
+  z-index: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .agent-panel {

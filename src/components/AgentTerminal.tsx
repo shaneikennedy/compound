@@ -8,14 +8,38 @@ import { useEffect, useRef } from "react";
 
 type TerminalDataPayload = { data: number[] };
 
+function focusTerminalAfterShellUiSettles(
+  isAlive: () => boolean,
+  term: Terminal,
+): void {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        if (!isAlive()) return;
+        try {
+          term.focus();
+        } catch {
+          /* xterm readiness / layout */
+        }
+      }, 0);
+    });
+  });
+}
+
 export function AgentTerminal({
   rootPath,
   lightChrome,
+  visible,
 }: {
   rootPath: string;
   lightChrome: boolean;
+  visible: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
 
   useEffect(() => {
     const el = hostRef.current;
@@ -43,8 +67,10 @@ export function AgentTerminal({
     });
 
     const fit = new FitAddon();
+    fitRef.current = fit;
     term.loadAddon(fit);
     term.open(el);
+    termRef.current = term;
     fit.fit();
 
     const ro = new ResizeObserver(() => {
@@ -87,9 +113,17 @@ export function AgentTerminal({
           cols: term.cols,
           rows: term.rows,
         });
+        focusTerminalAfterShellUiSettles(
+          () => !dead && visibleRef.current,
+          term,
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         term.writeln(`\r\n\x1b[31mCould not start shell: ${msg}\x1b[0m\r\n`);
+        focusTerminalAfterShellUiSettles(
+          () => !dead && visibleRef.current,
+          term,
+        );
       }
 
       if (dead) {
@@ -99,6 +133,8 @@ export function AgentTerminal({
 
     return () => {
       dead = true;
+      termRef.current = null;
+      fitRef.current = null;
       ro.disconnect();
       disposeResize.dispose();
       disposeData.dispose();
@@ -107,6 +143,41 @@ export function AgentTerminal({
       term.dispose();
     };
   }, [rootPath, lightChrome]);
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    let focusTimer: ReturnType<typeof window.setTimeout> | undefined;
+    let raf1 = 0;
+    let raf2 = 0;
+
+    raf1 = window.requestAnimationFrame(() => {
+      if (cancelled) return;
+      raf2 = window.requestAnimationFrame(() => {
+        if (cancelled) return;
+        try {
+          fitRef.current?.fit();
+        } catch {
+          /* xterm layout not ready */
+        }
+        focusTimer = window.setTimeout(() => {
+          if (cancelled || !visibleRef.current) return;
+          try {
+            termRef.current?.focus();
+          } catch {
+            /* xterm readiness */
+          }
+        }, 0);
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+      if (focusTimer !== undefined) window.clearTimeout(focusTimer);
+    };
+  }, [visible]);
 
   return (
     <div

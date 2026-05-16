@@ -19,6 +19,22 @@ export type AgentWorktreeInfo = {
   purpose: string;
 };
 
+/** Per-tab agent context: unset until user picks main repo or creates a worktree. */
+export type AgentSession =
+  | { kind: "unset" }
+  | { kind: "main_repository" }
+  | { kind: "worktree"; info: AgentWorktreeInfo };
+
+export function agentSessionConfigured(s: AgentSession): boolean {
+  return s.kind !== "unset";
+}
+
+export function agentShellRoot(projectRoot: string, s: AgentSession): string | null {
+  if (s.kind === "unset") return null;
+  if (s.kind === "main_repository") return projectRoot;
+  return s.info.path;
+}
+
 export type WorkspaceTabState = {
   id: string;
   label: string;
@@ -40,7 +56,7 @@ export type WorkspaceTabState = {
   diffPatchError: string | null;
   diffLoadGeneration: number;
   diffStyle: "unified" | "split";
-  agentWorktree: AgentWorktreeInfo | null;
+  agentSession: AgentSession;
 };
 
 export function createWorkspaceTab(
@@ -69,6 +85,6 @@ export function createWorkspaceTab(
     diffPatchError: null,
     diffLoadGeneration: 0,
     diffStyle: "unified",
-    agentWorktree: null,
+    agentSession: { kind: "unset" },
   };
 }

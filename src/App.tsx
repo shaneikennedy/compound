@@ -33,6 +33,7 @@ import {
   SelectValue,
 } from "./components/ui/select";
 import { ViewModeToggle } from "./components/ui/view-mode-toggle";
+import { cn } from "./lib/utils";
 import { repoPathToAbsolute } from "./repo/absolutePath";
 import { treePathsForTouchedFiles } from "./repo/diffTreePaths";
 import type { GitStatusEntry } from "@pierre/trees";
@@ -44,6 +45,8 @@ import {
 import {
   type BranchDiffFileEntry,
   type GitBranchListPayload,
+  agentSessionConfigured,
+  agentShellRoot,
   createWorkspaceTab,
   type WorkspaceTabState,
 } from "./tabModel";
@@ -266,8 +269,11 @@ export default function App() {
 
   const fileTreeRoot = useMemo(() => {
     if (!projectRoot || !activeTab) return null;
-    if (activeTab.viewMode === "agent" && activeTab.agentWorktree) {
-      return activeTab.agentWorktree.path;
+    if (
+      activeTab.viewMode === "agent" &&
+      activeTab.agentSession.kind === "worktree"
+    ) {
+      return activeTab.agentSession.info.path;
     }
     return projectRoot;
   }, [projectRoot, activeTab]);
@@ -440,7 +446,13 @@ export default function App() {
   const fileLoading = activeTab?.fileLoading ?? false;
   const fileContents = activeTab?.fileContents ?? null;
   const fileError = activeTab?.fileError ?? null;
-  const agentWorktree = activeTab?.agentWorktree ?? null;
+  const agentSession = activeTab?.agentSession ?? { kind: "unset" };
+  const agentConfigured = agentSessionConfigured(agentSession);
+  const agentShellCwd = useMemo(
+    () =>
+      projectRoot ? agentShellRoot(projectRoot, agentSession) : null,
+    [projectRoot, agentSession],
+  );
 
   const branchRefOptions = useMemo(
     () =>
@@ -776,7 +788,7 @@ export default function App() {
     setAgentDialogError(null);
     patchTab(activeTabId, {
       viewMode: "agent",
-      agentWorktree: null,
+      agentSession: { kind: "main_repository" },
     });
     setAgentDialogOpen(false);
   }, [activeTabId, patchTab]);
@@ -798,10 +810,13 @@ export default function App() {
         const shortLabel =
           purpose.length > 26 ? `${purpose.slice(0, 26)}…` : purpose;
         patchTab(activeTabId, {
-          agentWorktree: {
-            path: wt.path,
-            branch: wt.branch,
-            purpose,
+          agentSession: {
+            kind: "worktree",
+            info: {
+              path: wt.path,
+              branch: wt.branch,
+              purpose,
+            },
           },
           viewMode: "agent",
           label: shortLabel,
@@ -824,8 +839,8 @@ export default function App() {
 
   const breadcrumb =
     viewMode === "agent"
-      ? agentWorktree
-        ? `Agent · ${agentWorktree.branch}`
+      ? agentSession.kind === "worktree"
+        ? `Agent · ${agentSession.info.branch}`
         : "Agent · this repository"
       : viewMode === "diff"
         ? selectedRel != null
@@ -893,6 +908,112 @@ export default function App() {
     );
   }
 
+  const browseWorkspaceMain = (
+    <>
+      <aside className={`tree-panel${sidebarOpen ? "" : " collapsed"}`}>
+        <div
+          className="tree-panel-inner"
+          data-focus-landmark=""
+          data-focus-map-label="File tree"
+          tabIndex={-1}
+        >
+          {treeBusy ? (
+            <WorkspaceIndexingPanel context="tree" />
+          ) : viewMode === "diff" && diffListError ? (
+            <div className="pane-placeholder pane-error">{diffListError}</div>
+          ) : viewMode === "diff" && diffEntries.length === 0 ? (
+            <div className="pane-placeholder">
+              No changed files between these refs.
+            </div>
+          ) : treeScanForPane && treeScanForPane.paths.length > 0 ? (
+            <RepoTreePane
+              scan={treeScanForPane}
+              workspaceKey={fileTreeRoot ?? projectRoot}
+              treeChromeTheme={treeChromeTheme}
+              onSelectFileRel={onSelectFileRel}
+              diffMode={
+                viewMode === "diff"
+                  ? {
+                      paths: diffTreeScan?.paths ?? [],
+                      gitStatus: diffGitStatusEntries,
+                      preferredSelectedRel: selectedRel,
+                      instanceKey: diffTreeInstanceKey,
+                    }
+                  : null
+              }
+            />
+          ) : (
+            <div className="pane-placeholder">
+              <p>No browsable files in this folder.</p>
+            </div>
+          )}
+        </div>
+      </aside>
+      <section
+        className="viewer-panel"
+        data-focus-landmark=""
+        data-focus-map-label="File viewer"
+        tabIndex={-1}
+      >
+        <header>
+          {viewMode === "diff"
+            ? diffSidebarLoading
+              ? "Loading diff…"
+              : selectedRel
+                ? (selectedRel.split("/").pop() ?? selectedRel)
+                : "Pick a changed file"
+            : indexingWorkspace
+              ? "Indexing workspace…"
+              : selectedRel
+                ? (selectedRel.split("/").pop() ?? selectedRel)
+                : scan?.readmePath
+                  ? "Select a file"
+                  : "No README in root — pick a file"}
+        </header>
+        {treeBusy ? (
+          <WorkspaceIndexingPanel context="viewer" />
+        ) : viewMode === "diff" ? (
+          !selectedRel ? (
+            <div className="pane-placeholder">
+              {diffEntries.length === 0
+                ? "No changes to show."
+                : "Choose a file from the tree."}
+            </div>
+          ) : diffPatchLoading ? (
+            <div className="pane-placeholder">Loading patch…</div>
+          ) : (
+            <DiffViewer
+              relativePath={selectedRel}
+              patchText={diffPatchText ?? ""}
+              theme={resolvedCodeViewerTheme}
+              diffStyle={diffStyle}
+            />
+          )
+        ) : indexingWorkspace ? (
+          <WorkspaceIndexingPanel context="viewer" />
+        ) : selectedRel && fileLoading ? (
+          <div className="pane-placeholder">Loading file…</div>
+        ) : selectedRel && fileContents !== null ? (
+          <CodeViewer
+            relativePath={selectedRel}
+            contents={fileContents}
+            theme={resolvedCodeViewerTheme}
+          />
+        ) : (
+          <div className="pane-placeholder">
+            {!projectRoot
+              ? "Open a repository to begin."
+              : !selectedRel && !fileError
+                ? "Choose a file from the tree."
+                : null}
+          </div>
+        )}
+      </section>
+    </>
+  );
+
+  const agentViewFront = viewMode === "agent";
+
   return (
     <div ref={shellRef} className="app-shell">
       <TabStrip
@@ -927,7 +1048,11 @@ export default function App() {
                 patchTab(activeTabId, { viewMode: "diff" });
               } else {
                 setAgentDialogError(null);
-                setAgentDialogOpen(true);
+                if (agentSessionConfigured(activeTab.agentSession)) {
+                  patchTab(activeTabId, { viewMode: "agent" });
+                } else {
+                  setAgentDialogOpen(true);
+                }
               }
             }}
           />
@@ -1091,149 +1216,68 @@ export default function App() {
       ) : null}
 
       <div
-        className={`app-body${viewMode === "agent" ? " app-body--agent" : ""}`}
+        className={cn("app-body", agentConfigured && "app-body--stacked")}
         aria-busy={treeBusy || undefined}
       >
-        {viewMode === "agent" ? (
-          <section className="agent-panel" tabIndex={-1}>
-            <header>
-              {agentWorktree ? (
-                <>
-                  <span className="text-zinc-600 dark:text-zinc-400">
-                    {agentWorktree.purpose}
-                  </span>
-                  <span className="mx-2 text-zinc-400">·</span>
-                  <span className="font-mono text-xs opacity-90">
-                    {agentWorktree.path}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <span className="text-zinc-600 dark:text-zinc-400">
-                    This repository
-                  </span>
-                  <span className="mx-2 text-zinc-400">·</span>
-                  <span className="font-mono text-xs opacity-90">
-                    {projectRoot}
-                  </span>
-                </>
-              )}
-            </header>
-            <AgentTerminal
-              key={
-                agentWorktree
-                  ? `${activeTabId}:${agentWorktree.path}`
-                  : `${activeTabId}:${projectRoot}`
-              }
-              rootPath={agentWorktree?.path ?? projectRoot}
-              lightChrome={prefersLightChrome}
-            />
-          </section>
-        ) : (
-          <>
-            <aside className={`tree-panel${sidebarOpen ? "" : " collapsed"}`}>
-              <div
-                className="tree-panel-inner"
-                data-focus-landmark=""
-                data-focus-map-label="File tree"
-                tabIndex={-1}
-              >
-                {treeBusy ? (
-                  <WorkspaceIndexingPanel context="tree" />
-                ) : viewMode === "diff" && diffListError ? (
-                  <div className="pane-placeholder pane-error">
-                    {diffListError}
-                  </div>
-                ) : viewMode === "diff" && diffEntries.length === 0 ? (
-                  <div className="pane-placeholder">
-                    No changed files between these refs.
-                  </div>
-                ) : treeScanForPane &&
-                  treeScanForPane.paths.length > 0 ? (
-                  <RepoTreePane
-                    scan={treeScanForPane}
-                    workspaceKey={fileTreeRoot ?? projectRoot}
-                    treeChromeTheme={treeChromeTheme}
-                    onSelectFileRel={onSelectFileRel}
-                    diffMode={
-                      viewMode === "diff"
-                        ? {
-                            paths: diffTreeScan?.paths ?? [],
-                            gitStatus: diffGitStatusEntries,
-                            preferredSelectedRel: selectedRel,
-                            instanceKey: diffTreeInstanceKey,
-                          }
-                        : null
-                    }
-                  />
-                ) : (
-                  <div className="pane-placeholder">
-                    <p>No browsable files in this folder.</p>
-                  </div>
-                )}
-              </div>
-            </aside>
-            <section
-              className="viewer-panel"
-              data-focus-landmark=""
-              data-focus-map-label="File viewer"
-              tabIndex={-1}
-            >
+        {agentConfigured && agentShellCwd ? (
+          <div
+            className={cn(
+              "app-stack-layer app-stack-agent",
+              agentViewFront
+                ? "app-stack-layer--front"
+                : "app-stack-layer--back",
+            )}
+            inert={!agentViewFront}
+            aria-hidden={!agentViewFront}
+          >
+            <section className="agent-panel" tabIndex={-1}>
               <header>
-                {viewMode === "diff"
-                  ? diffSidebarLoading
-                    ? "Loading diff…"
-                    : selectedRel
-                      ? (selectedRel.split("/").pop() ?? selectedRel)
-                      : "Pick a changed file"
-                  : indexingWorkspace
-                    ? "Indexing workspace…"
-                    : selectedRel
-                      ? (selectedRel.split("/").pop() ?? selectedRel)
-                      : scan?.readmePath
-                        ? "Select a file"
-                        : "No README in root — pick a file"}
-              </header>
-              {treeBusy ? (
-                <WorkspaceIndexingPanel context="viewer" />
-              ) : viewMode === "diff" ? (
-                !selectedRel ? (
-                  <div className="pane-placeholder">
-                    {diffEntries.length === 0
-                      ? "No changes to show."
-                      : "Choose a file from the tree."}
-                  </div>
-                ) : diffPatchLoading ? (
-                  <div className="pane-placeholder">Loading patch…</div>
+                {agentSession.kind === "worktree" ? (
+                  <>
+                    <span className="text-zinc-600 dark:text-zinc-400">
+                      {agentSession.info.purpose}
+                    </span>
+                    <span className="mx-2 text-zinc-400">·</span>
+                    <span className="font-mono text-xs opacity-90">
+                      {agentSession.info.path}
+                    </span>
+                  </>
                 ) : (
-                  <DiffViewer
-                    relativePath={selectedRel}
-                    patchText={diffPatchText ?? ""}
-                    theme={resolvedCodeViewerTheme}
-                    diffStyle={diffStyle}
-                  />
-                )
-              ) : indexingWorkspace ? (
-                <WorkspaceIndexingPanel context="viewer" />
-              ) : selectedRel && fileLoading ? (
-                <div className="pane-placeholder">Loading file…</div>
-              ) : selectedRel && fileContents !== null ? (
-                <CodeViewer
-                  relativePath={selectedRel}
-                  contents={fileContents}
-                  theme={resolvedCodeViewerTheme}
-                />
-              ) : (
-                <div className="pane-placeholder">
-                  {!projectRoot
-                    ? "Open a repository to begin."
-                    : !selectedRel && !fileError
-                      ? "Choose a file from the tree."
-                      : null}
-                </div>
-              )}
+                  <>
+                    <span className="text-zinc-600 dark:text-zinc-400">
+                      This repository
+                    </span>
+                    <span className="mx-2 text-zinc-400">·</span>
+                    <span className="font-mono text-xs opacity-90">
+                      {projectRoot}
+                    </span>
+                  </>
+                )}
+              </header>
+              <AgentTerminal
+                key={`${activeTabId}:${agentShellCwd}`}
+                rootPath={agentShellCwd}
+                lightChrome={prefersLightChrome}
+                visible={agentViewFront}
+              />
             </section>
-          </>
+          </div>
+        ) : null}
+        {agentConfigured ? (
+          <div
+            className={cn(
+              "app-stack-layer app-stack-browse",
+              agentViewFront
+                ? "app-stack-layer--back"
+                : "app-stack-layer--front",
+            )}
+            inert={agentViewFront}
+            aria-hidden={agentViewFront}
+          >
+            {browseWorkspaceMain}
+          </div>
+        ) : (
+          browseWorkspaceMain
         )}
       </div>
 
