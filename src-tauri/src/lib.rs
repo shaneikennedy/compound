@@ -1,5 +1,6 @@
 mod terminal;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
@@ -410,62 +411,168 @@ fn map_name_status_to_entry(parts: &[&str]) -> Option<BranchDiffFileEntry> {
     })
 }
 
-/// Files changed between `base_ref` and `head_ref` (two-dot tree diff).
-#[tauri::command]
-fn git_branch_diff_files(
-    root_path: String,
-    base_ref: String,
-    head_ref: String,
-) -> Result<Vec<BranchDiffFileEntry>, String> {
-    let root = validate_workspace_dir(&root_path)?;
-    ensure_git_worktree(root)?;
-    let b = base_ref.trim();
-    let h = head_ref.trim();
-    git_rev_verify(root, b)?;
-    git_rev_verify(root, h)?;
-
-    let text = run_git_stdout(
-        root,
-        &[
-            "-c",
-            "core.quotepath=false",
-            "diff",
-            "--name-status",
-            "-M",
-            "-C",
-            b,
-            h,
-        ],
-    )?;
-
-    let mut out = Vec::new();
+fn parse_diff_name_status_into_map(
+    map: &mut HashMap<String, BranchDiffFileEntry>,
+    text: &str,
+) {
     for line in text.lines() {
         if line.is_empty() {
             continue;
         }
         let parts: Vec<&str> = line.split('\t').collect();
         if let Some(entry) = map_name_status_to_entry(&parts) {
-            out.push(entry);
+            map.insert(entry.path.clone(), entry);
         }
     }
+}
+
+/// Staged + unstaged changes vs `HEAD`, plus untracked files (repo-relative paths).
+#[tauri::command]
+fn git_worktree_diff_files(root_path: String) -> Result<Vec<BranchDiffFileEntry>, String> {
+    let root = validate_workspace_dir(&root_path)?;
+    ensure_git_worktree(root)?;
+
+    let mut map: HashMap<String, BranchDiffFileEntry> = HashMap::new();
+    let has_head = run_git_stdout(root, &["rev-parse", "--verify", "HEAD"]).is_ok();
+
+    if has_head {
+        let text = run_git_stdout(
+            root,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--name-status",
+                "-M",
+                "-C",
+                "HEAD",
+            ],
+        )?;
+        parse_diff_name_status_into_map(&mut map, &text);
+    } else {
+        let cached = run_git_stdout(
+            root,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--name-status",
+                "--cached",
+            ],
+        )?;
+        parse_diff_name_status_into_map(&mut map, &cached);
+        let unstaged = run_git_stdout(
+            root,
+            &["-c", "core.quotepath=false", "diff", "--name-status"],
+        )?;
+        parse_diff_name_status_into_map(&mut map, &unstaged);
+    }
+
+    let untracked = run_git_stdout(
+        root,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+        ],
+    )?;
+    for line in untracked.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let p = line.to_string();
+        if map.contains_key(&p) {
+            continue;
+        }
+        map.insert(
+            p.clone(),
+            BranchDiffFileEntry {
+                path: p,
+                status: "added".to_string(),
+                old_path: None,
+            },
+        );
+    }
+
+    let mut out: Vec<BranchDiffFileEntry> = map.into_values().collect();
+    out.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then_with(|| a.status.cmp(&b.status))
+    });
     Ok(out)
 }
 
-/// Unified diff for a single path between two refs (path is repo-relative, POSIX).
+/// Unified diff for one locally changed path (`HEAD` vs worktree + index; untracked vs `/dev/null`).
 #[tauri::command]
-fn git_branch_diff_patch(
-    root_path: String,
-    base_ref: String,
-    head_ref: String,
-    path: String,
-) -> Result<String, String> {
+fn git_worktree_diff_patch(root_path: String, path: String) -> Result<String, String> {
     let root = validate_workspace_dir(&root_path)?;
     ensure_git_worktree(root)?;
     validate_repo_rel_path(&path)?;
-    let b = base_ref.trim();
-    let h = head_ref.trim();
-    git_rev_verify(root, b)?;
-    git_rev_verify(root, h)?;
+    let p = path.trim();
+    let has_head = run_git_stdout(root, &["rev-parse", "--verify", "HEAD"]).is_ok();
+
+    if has_head {
+        let patch = run_git_stdout(
+            root,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--no-ext-diff",
+                "-U3",
+                "HEAD",
+                "--",
+                p,
+            ],
+        );
+        match patch {
+            Ok(text) if !text.trim().is_empty() => return Ok(text),
+            Ok(_) => {}
+            Err(e) => return Err(e),
+        }
+    } else {
+        let mut combined = String::new();
+        if let Ok(a) = run_git_stdout(
+            root,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--no-ext-diff",
+                "-U3",
+                "--cached",
+                "--",
+                p,
+            ],
+        ) {
+            combined.push_str(&a);
+        }
+        if let Ok(b) = run_git_stdout(
+            root,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--no-ext-diff",
+                "-U3",
+                "--",
+                p,
+            ],
+        ) {
+            combined.push_str(&b);
+        }
+        if !combined.trim().is_empty() {
+            return Ok(combined);
+        }
+    }
+
+    let abs = Path::new(root).join(p);
+    if !abs.is_file() {
+        return Err("No local patch available for this path.".into());
+    }
 
     run_git_stdout(
         root,
@@ -475,10 +582,11 @@ fn git_branch_diff_patch(
             "diff",
             "--no-ext-diff",
             "-U3",
-            b,
-            h,
+            "--no-index",
+            "--text",
             "--",
-            path.trim(),
+            "/dev/null",
+            p,
         ],
     )
 }
@@ -495,8 +603,8 @@ pub fn run() {
             git_resolve_default_branch,
             git_create_agent_worktree,
             git_branch_list,
-            git_branch_diff_files,
-            git_branch_diff_patch,
+            git_worktree_diff_files,
+            git_worktree_diff_patch,
             terminal::terminal_spawn,
             terminal::terminal_write,
             terminal::terminal_resize,

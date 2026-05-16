@@ -46,7 +46,6 @@ import {
 } from "./repo/scanWorkspace";
 import {
   type BranchDiffFileEntry,
-  type GitBranchListPayload,
   type ViewModeOption,
   agentSessionConfigured,
   agentShellRoot,
@@ -70,30 +69,6 @@ function readInitialProjectRoot(): string | null {
   } catch {
     return null;
   }
-}
-
-function unionGitRefOptions(
-  current: string | null | undefined,
-  branches: readonly string[] | undefined,
-  ...extra: (string | null | undefined)[]
-): string[] {
-  const s = new Set<string>();
-  for (const x of [...extra, current, ...(branches ?? [])]) {
-    const t = typeof x === "string" ? x.trim() : "";
-    if (t.length > 0) s.add(t);
-  }
-  return [...s].sort((a, b) =>
-    a.localeCompare(b, undefined, { sensitivity: "base" }),
-  );
-}
-
-/** Radix Select requires `value` to match an item; clamp to avoid a hard render failure. */
-function pickGitRefForSelect(
-  value: string,
-  options: readonly string[],
-): string {
-  if (options.length === 0) return value;
-  return options.includes(value) ? value : options[0]!;
 }
 
 class WorkspaceChromeErrorBoundary extends Component<
@@ -383,7 +358,7 @@ export default function App() {
         });
         const id = crypto.randomUUID();
         setTabs([
-          createWorkspaceTab(id, 1, info.startPoint),
+          createWorkspaceTab(id, 1),
         ]);
         setActiveTabId(id);
       } catch {
@@ -394,7 +369,7 @@ export default function App() {
         });
         const id = crypto.randomUUID();
         setTabs([
-          createWorkspaceTab(id, 1, "origin/main"),
+          createWorkspaceTab(id, 1),
         ]);
         setActiveTabId(id);
       }
@@ -486,12 +461,9 @@ export default function App() {
   }, [fileTreeRoot, activeTabId, patchTab]);
 
   const viewMode = activeTab?.viewMode ?? "browse";
-  const diffBaseRef = activeTab?.diffBaseRef ?? defaultStartPoint;
-  const diffHeadRef = activeTab?.diffHeadRef ?? "HEAD";
   const diffLoadGeneration = activeTab?.diffLoadGeneration ?? 0;
   const diffStyle = activeTab?.diffStyle ?? "unified";
   const selectedRel = activeTab?.selectedRel ?? null;
-  const branchList = activeTab?.branchList ?? null;
   const diffEntries = activeTab?.diffEntries ?? [];
   const diffListLoading = activeTab?.diffListLoading ?? false;
   const diffListError = activeTab?.diffListError ?? null;
@@ -511,32 +483,6 @@ export default function App() {
     [projectRoot, agentSession],
   );
 
-  const branchRefOptions = useMemo(
-    () =>
-      unionGitRefOptions(
-        branchList?.current,
-        branchList?.branches,
-        diffBaseRef,
-        diffHeadRef,
-        defaultBranchInfo?.startPoint,
-        "origin/main",
-        "main",
-        "master",
-        "HEAD",
-      ),
-    [branchList, diffBaseRef, diffHeadRef, defaultBranchInfo?.startPoint],
-  );
-
-  const diffSelectBaseValue = useMemo(
-    () => pickGitRefForSelect(diffBaseRef, branchRefOptions),
-    [diffBaseRef, branchRefOptions],
-  );
-
-  const diffSelectHeadValue = useMemo(
-    () => pickGitRefForSelect(diffHeadRef, branchRefOptions),
-    [diffHeadRef, branchRefOptions],
-  );
-
   const diffTreeScan = useMemo((): ScanWorkspaceResult | null => {
     if (viewMode !== "diff") return null;
     if (diffEntries.length === 0) return null;
@@ -551,9 +497,8 @@ export default function App() {
   );
 
   const diffTreeInstanceKey = useMemo(
-    () =>
-      `${diffBaseRef}\0${diffHeadRef}\0${diffEntries.map((e) => `${e.path}\t${e.status}`).join("\n")}`,
-    [diffBaseRef, diffHeadRef, diffEntries],
+    () => diffEntries.map((e) => `${e.path}\t${e.status}`).join("\n"),
+    [diffEntries],
   );
 
   const treeScanForPane =
@@ -567,7 +512,6 @@ export default function App() {
     if (!projectRoot || !activeTabId || viewMode !== "diff") {
       if (activeTabId) {
         patchTab(activeTabId, {
-          branchList: null,
           diffEntries: [],
           diffListError: null,
           diffListLoading: false,
@@ -588,25 +532,10 @@ export default function App() {
 
     (async () => {
       try {
-        const bl = await invoke<GitBranchListPayload>("git_branch_list", {
-          rootPath: projectRoot,
-        });
-        if (cancelled || activeTabIdRef.current !== tid) return;
-        patchTab(tid, { branchList: bl });
-        if (!bl.ok) {
-          patchTab(tid, {
-            diffEntries: [],
-            diffListError: bl.error ?? "Could not read repository branches.",
-            diffListLoading: false,
-          });
-          return;
-        }
         const files = await invoke<BranchDiffFileEntry[]>(
-          "git_branch_diff_files",
+          "git_worktree_diff_files",
           {
             rootPath: projectRoot,
-            baseRef: diffBaseRef,
-            headRef: diffHeadRef,
           },
         );
         if (cancelled || activeTabIdRef.current !== tid) return;
@@ -645,8 +574,6 @@ export default function App() {
     projectRoot,
     activeTabId,
     viewMode,
-    diffBaseRef,
-    diffHeadRef,
     diffLoadGeneration,
     patchTab,
   ]);
@@ -673,10 +600,8 @@ export default function App() {
 
     (async () => {
       try {
-        const patch = await invoke<string>("git_branch_diff_patch", {
+        const patch = await invoke<string>("git_worktree_diff_patch", {
           rootPath: projectRoot,
-          baseRef: diffBaseRef,
-          headRef: diffHeadRef,
           path: selectedRel,
         });
         if (!cancelled && activeTabIdRef.current === tid) {
@@ -705,8 +630,6 @@ export default function App() {
     activeTabId,
     viewMode,
     selectedRel,
-    diffBaseRef,
-    diffHeadRef,
     diffLoadGeneration,
     patchTab,
   ]);
@@ -869,11 +792,11 @@ export default function App() {
     const id = crypto.randomUUID();
     setTabs((ts) => {
       const n = ts.length + 1;
-      return [...ts, createWorkspaceTab(id, n, defaultStartPoint)];
+      return [...ts, createWorkspaceTab(id, n)];
     });
     setActiveTabId(id);
     readmeOpenedKeyRef.current = "";
-  }, [defaultStartPoint]);
+  }, []);
 
   const navigateTab = useCallback(
     (delta: -1 | 1) => {
@@ -1007,7 +930,7 @@ export default function App() {
         : `Agent · ${defaultBranchShortName}`
       : viewMode === "diff"
         ? selectedRel != null
-          ? `${diffBaseRef} … ${diffHeadRef} · ${selectedRel}`
+          ? `Local · ${selectedRel}`
           : diffListLoading
             ? "Loading changed files…"
             : "—"
@@ -1016,10 +939,7 @@ export default function App() {
 
   const indexingWorkspace = Boolean(projectRoot && scanning);
   const diffSidebarLoading =
-    viewMode === "diff" &&
-    Boolean(projectRoot) &&
-    diffListLoading &&
-    branchList?.ok !== false;
+    viewMode === "diff" && Boolean(projectRoot) && diffListLoading;
 
   const treeBusy =
     viewMode !== "agent" && (indexingWorkspace || diffSidebarLoading);
@@ -1086,7 +1006,7 @@ export default function App() {
             <div className="pane-placeholder pane-error">{diffListError}</div>
           ) : viewMode === "diff" && diffEntries.length === 0 ? (
             <div className="pane-placeholder">
-              No changed files between these refs.
+              Working tree matches HEAD — nothing to diff locally.
             </div>
           ) : treeScanForPane && treeScanForPane.paths.length > 0 ? (
             <RepoTreePane
@@ -1260,50 +1180,8 @@ export default function App() {
         {viewMode === "diff" && projectRoot ? (
           <div
             className="toolbar-diff-bar"
-            title="Compare git refs (two-dot). Refresh after fetch."
+            title="Uncommitted local changes vs HEAD. Refresh after edits."
           >
-            <label className="toolbar-diff-field">
-              <span className="toolbar-diff-field-label">Base</span>
-              <Select
-                value={diffSelectBaseValue}
-                onValueChange={(v) => {
-                  if (activeTabId) patchTab(activeTabId, { diffBaseRef: v });
-                }}
-              >
-                <SelectTrigger className="h-[30px] max-w-[min(148px,24vw)] text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {branchRefOptions.map((r) => (
-                    <SelectItem key={r} value={r}>
-                      {r}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-            <label className="toolbar-diff-field">
-              <span className="toolbar-diff-field-label">Compare</span>
-              <Select
-                value={diffSelectHeadValue}
-                onValueChange={(v) => {
-                  if (activeTabId) patchTab(activeTabId, { diffHeadRef: v });
-                }}
-              >
-                <SelectTrigger className="h-[30px] max-w-[min(148px,24vw)] text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {branchRefOptions.map((r) => (
-                    <SelectItem key={`cmp-${r}`} value={r}>
-                      {r === "HEAD" && branchList?.current
-                        ? `${r} (${branchList.current})`
-                        : r}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
             <div className="toolbar-diff-field">
               <span className="toolbar-diff-field-label" aria-hidden="true">
                 &nbsp;
@@ -1314,7 +1192,7 @@ export default function App() {
                 size="icon"
                 className="h-[30px] w-[30px] shrink-0 text-base"
                 aria-label="Refresh diff"
-                title="Reload branches and changed files"
+                title="Reload changed files"
                 onClick={() => {
                   if (!activeTabId) return;
                   patchTab(activeTabId, {

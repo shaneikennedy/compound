@@ -1,12 +1,5 @@
 export type ViewModeOption = "browse" | "diff" | "agent";
 
-export type GitBranchListPayload = {
-  ok: boolean;
-  error: string | null;
-  current: string | null;
-  branches: string[];
-};
-
 export type BranchDiffFileEntry = {
   path: string;
   status: string;
@@ -46,9 +39,6 @@ export type WorkspaceTabState = {
   fileContents: string | null;
   fileError: string | null;
   fileLoading: boolean;
-  diffBaseRef: string;
-  diffHeadRef: string;
-  branchList: GitBranchListPayload | null;
   diffEntries: BranchDiffFileEntry[];
   diffListLoading: boolean;
   diffListError: string | null;
@@ -74,11 +64,7 @@ export function workspaceTabDisplayName(
   return tab.agentSession.info.branch;
 }
 
-export function createWorkspaceTab(
-  id: string,
-  workspaceIndex: number,
-  defaultDiffBaseRef: string,
-): WorkspaceTabState {
+export function createWorkspaceTab(id: string, workspaceIndex: number): WorkspaceTabState {
   return {
     id,
     workspaceIndex,
@@ -89,9 +75,6 @@ export function createWorkspaceTab(
     fileContents: null,
     fileError: null,
     fileLoading: false,
-    diffBaseRef: defaultDiffBaseRef,
-    diffHeadRef: "HEAD",
-    branchList: null,
     diffEntries: [],
     diffListLoading: false,
     diffListError: null,
