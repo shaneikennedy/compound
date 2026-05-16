@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Button } from "./ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
-const LAST_ROOT_STORAGE_KEY = "codar:last-repo-root";
+const LAST_ROOT_STORAGE_KEY = "compound:last-repo-root";
 
 export function ProjectOpenScreen({
   onProjectChosen,
@@ -60,7 +60,7 @@ export function ProjectOpenScreen({
   return (
     <div className="project-open-screen">
       <div className="project-open-card">
-        <h1 className="project-open-title">Codar</h1>
+        <h1 className="project-open-title">Compound</h1>
         <p className="project-open-lead">
           Open a git repository to begin. The project stays fixed for this
           window — use multiple tabs for parallel work.

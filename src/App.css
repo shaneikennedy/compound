@@ -348,7 +348,7 @@ html:not([data-scrolling="true"]) *::-webkit-scrollbar-thumb:hover {
   color: var(--app-text);
 }
 
-@keyframes codar-indexing-spin {
+@keyframes compound-indexing-spin {
   to {
     transform: rotate(360deg);
   }
@@ -390,7 +390,7 @@ html:not([data-scrolling="true"]) *::-webkit-scrollbar-thumb:hover {
   border-radius: 50%;
   border: 2px solid var(--app-border);
   border-top-color: #009fff;
-  animation: codar-indexing-spin 0.75s linear infinite;
+  animation: compound-indexing-spin 0.75s linear infinite;
 }
 
 .workspace-indexing-copy {

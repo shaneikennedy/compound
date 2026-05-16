@@ -183,7 +183,7 @@ export function AgentTerminal({
     <div
       ref={hostRef}
       className="agent-terminal-host"
-      data-codar-agent-terminal=""
+      data-compound-agent-terminal=""
       data-focus-landmark=""
       data-focus-map-label="Agent terminal"
       tabIndex={-1}

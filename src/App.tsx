@@ -51,8 +51,8 @@ import {
   type WorkspaceTabState,
 } from "./tabModel";
 
-const LAST_ROOT_STORAGE_KEY = "codar:last-repo-root";
-const CODE_THEME_PREF_STORAGE_KEY = "codar:code-theme-preference";
+const LAST_ROOT_STORAGE_KEY = "compound:last-repo-root";
+const CODE_THEME_PREF_STORAGE_KEY = "compound:code-theme-preference";
 
 type DefaultBranchInfo = {
   shortName: string;
@@ -174,7 +174,7 @@ function isSpaceTypingTarget(el: EventTarget | null): boolean {
 
 function preferencesShortcutIgnoreTypingTarget(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
-  if (el.closest("[data-codar-agent-terminal]")) return false;
+  if (el.closest("[data-compound-agent-terminal]")) return false;
   return isSpaceTypingTarget(el);
 }
 

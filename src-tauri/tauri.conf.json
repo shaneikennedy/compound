@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Codar",
+  "productName": "Compound",
   "version": "0.1.0",
   "identifier": "com.shanekennedy.tauri-app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Codar",
+        "title": "Compound",
         "width": 1100,
         "height": 740
       }

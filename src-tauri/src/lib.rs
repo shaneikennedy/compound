@@ -34,7 +34,7 @@ fn validated_github_https_url(url: &str) -> Result<String, String> {
 #[tauri::command]
 fn git_clone_repo(url: String) -> Result<String, String> {
     let clone_url = validated_github_https_url(&url)?;
-    let parent = std::env::temp_dir().join("codar-github-clones");
+    let parent = std::env::temp_dir().join("compound-github-clones");
     std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
     let id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -209,7 +209,7 @@ fn git_resolve_default_branch(root_path: String) -> Result<DefaultBranchInfo, St
     })
 }
 
-/// Create a new branch + linked worktree from `base_start_point` under `.codar-worktrees/<repo>/…`.
+/// Create a new branch + linked worktree from `base_start_point` under `.compound-worktrees/<repo>/…`.
 #[tauri::command]
 fn git_create_agent_worktree(
     root_path: String,
@@ -242,7 +242,7 @@ fn git_create_agent_worktree(
     let parent = repo_path
         .parent()
         .ok_or_else(|| "Repository has no parent directory.".to_string())?;
-    let worktrees_root = parent.join(".codar-worktrees").join(repo_name);
+    let worktrees_root = parent.join(".compound-worktrees").join(repo_name);
     std::fs::create_dir_all(&worktrees_root).map_err(|e| e.to_string())?;
 
     let id = std::time::SystemTime::now()
@@ -253,7 +253,7 @@ fn git_create_agent_worktree(
     let wt_path = worktrees_root.join(dir_name);
 
     let branch_slug = slugify_branch_segment(&format!("{slug}-{}", id % 100_000));
-    let branch_name = format!("codar/{branch_slug}");
+    let branch_name = format!("compound/{branch_slug}");
 
     let output = Command::new("git")
         .current_dir(root)

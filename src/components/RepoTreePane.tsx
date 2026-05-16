@@ -47,15 +47,15 @@ const FILE_TREE_OVERLAY_SCROLLBARS_CSS = `
     border-radius: 5px;
     transition: background-color 0.25s ease;
   }
-  :host(.codar-tree-scrollbar-reveal) [data-file-tree-virtualized-scroll],
+  :host(.compound-tree-scrollbar-reveal) [data-file-tree-virtualized-scroll],
   :host-context(html[data-scrolling="true"]) [data-file-tree-virtualized-scroll] {
     scrollbar-color: var(--scrollbar-thumb-active) transparent;
   }
-  :host(.codar-tree-scrollbar-reveal) [data-file-tree-virtualized-scroll]::-webkit-scrollbar-thumb,
+  :host(.compound-tree-scrollbar-reveal) [data-file-tree-virtualized-scroll]::-webkit-scrollbar-thumb,
   :host-context(html[data-scrolling="true"]) [data-file-tree-virtualized-scroll]::-webkit-scrollbar-thumb {
     background-color: var(--scrollbar-thumb-active) !important;
   }
-  :host(.codar-tree-scrollbar-reveal) [data-file-tree-virtualized-scroll]::-webkit-scrollbar-thumb:hover,
+  :host(.compound-tree-scrollbar-reveal) [data-file-tree-virtualized-scroll]::-webkit-scrollbar-thumb:hover,
   :host-context(html[data-scrolling="true"]) [data-file-tree-virtualized-scroll]::-webkit-scrollbar-thumb:hover {
     background-color: var(--scrollbar-thumb-hover) !important;
   }
@@ -168,11 +168,11 @@ const TreeBody = memo(function TreeBody({
     };
 
     const pulseHost = (host: HTMLElement) => {
-      host.classList.add("codar-tree-scrollbar-reveal");
+      host.classList.add("compound-tree-scrollbar-reveal");
       clearHideTimer();
       hideTimer = setTimeout(() => {
         hideTimer = undefined;
-        host.classList.remove("codar-tree-scrollbar-reveal");
+        host.classList.remove("compound-tree-scrollbar-reveal");
       }, 900);
     };
 
@@ -210,7 +210,7 @@ const TreeBody = memo(function TreeBody({
       clearHideTimer();
       paneRootEl
         .querySelector("file-tree-container")
-        ?.classList.remove("codar-tree-scrollbar-reveal");
+        ?.classList.remove("compound-tree-scrollbar-reveal");
     };
   }, [preparedInput]);
 
@@ -258,8 +258,8 @@ export const RepoTreePane = memo(function RepoTreePane(props: {
     : workspaceKey;
 
   const treeInstanceId = diffMode
-    ? `codar-diff-tree:${diffMode.instanceKey}`
-    : "codar-repo-tree";
+    ? `compound-diff-tree:${diffMode.instanceKey}`
+    : "compound-repo-tree";
 
   return (
     <TreeBody
