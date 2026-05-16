@@ -1,7 +1,6 @@
 import "./App.css";
 
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
 import {
   useCallback,
   useEffect,
@@ -11,20 +10,21 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
-  CODE_VIEWER_THEME_OPTIONS,
-  codeViewerThemeLabel,
   isKnownCodeViewerTheme,
   type CodeViewerThemeId,
   type CodeViewerThemePick,
 } from "./repo/codeViewerThemes";
+import { AgentPurposeDialog } from "./components/AgentPurposeDialog";
+import { PreferencesDialog } from "./components/PreferencesDialog";
 import { AgentTerminal } from "./components/AgentTerminal";
 import { FocusMapOverlay } from "./components/FocusMapOverlay";
 import { CodeViewer } from "./components/CodeViewer";
 import { DiffViewer } from "./components/DiffViewer";
 import { FileSearchPalette } from "./components/FileSearchPalette";
+import { ProjectOpenScreen } from "./components/ProjectOpenScreen";
 import { RepoTreePane } from "./components/RepoTreePane";
+import { TabStrip } from "./components/TabStrip";
 import { Button } from "./components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -32,10 +32,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select";
-import {
-  ViewModeToggle,
-  type ViewModeOption,
-} from "./components/ui/view-mode-toggle";
+import { ViewModeToggle } from "./components/ui/view-mode-toggle";
 import { repoPathToAbsolute } from "./repo/absolutePath";
 import { treePathsForTouchedFiles } from "./repo/diffTreePaths";
 import type { GitStatusEntry } from "@pierre/trees";
@@ -44,22 +41,29 @@ import {
   scanWorkspaceRoot,
   type ScanWorkspaceResult,
 } from "./repo/scanWorkspace";
+import {
+  type BranchDiffFileEntry,
+  type GitBranchListPayload,
+  createWorkspaceTab,
+  type WorkspaceTabState,
+} from "./tabModel";
 
 const LAST_ROOT_STORAGE_KEY = "codar:last-repo-root";
 const CODE_THEME_PREF_STORAGE_KEY = "codar:code-theme-preference";
 
-type GitBranchListPayload = {
-  ok: boolean;
-  error: string | null;
-  current: string | null;
-  branches: string[];
+type DefaultBranchInfo = {
+  shortName: string;
+  startPoint: string;
 };
 
-type BranchDiffFileEntry = {
-  path: string;
-  status: string;
-  oldPath: string | null;
-};
+function readInitialProjectRoot(): string | null {
+  try {
+    const p = localStorage.getItem(LAST_ROOT_STORAGE_KEY);
+    return p?.trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 function unionGitRefOptions(
   current: string | null | undefined,
@@ -107,8 +111,11 @@ function useSystemAppearanceLight(): boolean {
   );
 }
 
-/** Shown while `scanWorkspaceRoot` indexes the repository. */
-function WorkspaceIndexingPanel({ context }: { context: "tree" | "viewer" }) {
+function WorkspaceIndexingPanel({
+  context,
+}: {
+  context: "tree" | "viewer";
+}) {
   return (
     <div
       className={`workspace-indexing workspace-indexing--${context}`}
@@ -126,14 +133,12 @@ function WorkspaceIndexingPanel({ context }: { context: "tree" | "viewer" }) {
   );
 }
 
-/** After ⌘K palette pick, focus the code scroll region once the file is open. */
 function focusCodeViewerScrollSurface() {
   document
     .querySelector<HTMLElement>("[data-focus-scroll-surface]")
     ?.focus({ preventScroll: true });
 }
 
-/** Show styled scrollbars briefly while any scrollable surface is moving (capture phase). */
 function useScrollFlashClass() {
   useEffect(() => {
     let hideTimer: ReturnType<typeof setTimeout> | undefined;
@@ -155,7 +160,6 @@ function useScrollFlashClass() {
   }, []);
 }
 
-/** Inputs need Space for typing; tree rows / viewer need chord + arrow scroll without paging. */
 function isSpaceTypingTarget(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
   const tag = el.tagName;
@@ -165,7 +169,12 @@ function isSpaceTypingTarget(el: EventTarget | null): boolean {
   return false;
 }
 
-/** Space paging on scroll-focused panes clashes with Space+Space focus map. */
+function preferencesShortcutIgnoreTypingTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.closest("[data-codar-agent-terminal]")) return false;
+  return isSpaceTypingTarget(el);
+}
+
 function useSuppressSpacePagingInTreeAndViewer() {
   useEffect(() => {
     const onKeyDownCapture = (e: KeyboardEvent) => {
@@ -212,39 +221,21 @@ function useSuppressSpacePagingInTreeAndViewer() {
 export default function App() {
   useScrollFlashClass();
   useSuppressSpacePagingInTreeAndViewer();
-  const [rootPath, setRootPath] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem(LAST_ROOT_STORAGE_KEY);
-    } catch {
-      return null;
-    }
-  });
+
+  const [projectRoot, setProjectRoot] = useState<string | null>(
+    readInitialProjectRoot,
+  );
+  const [defaultBranchInfo, setDefaultBranchInfo] =
+    useState<DefaultBranchInfo | null>(null);
+  const [tabs, setTabs] = useState<WorkspaceTabState[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+
   const [scan, setScan] = useState<ScanWorkspaceResult | null>(null);
   const [scanning, setScanning] = useState(false);
-  const [selectedRel, setSelectedRel] = useState<string | null>(null);
-  const [fileContents, setFileContents] = useState<string | null>(null);
-  const [fileError, setFileError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [cloneUrl, setCloneUrl] = useState("");
-  const [cloneOpen, setCloneOpen] = useState(false);
-  const [cloneError, setCloneError] = useState<string | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [fileLoading, setFileLoading] = useState(false);
-  const [filePaletteOpen, setFilePaletteOpen] = useState(false);
-  const [viewMode, setViewMode] = useState<ViewModeOption>("browse");
-  const [diffBaseRef, setDiffBaseRef] = useState("origin/main");
-  const [diffHeadRef, setDiffHeadRef] = useState("HEAD");
-  const [branchList, setBranchList] = useState<GitBranchListPayload | null>(
-    null,
-  );
-  const [diffEntries, setDiffEntries] = useState<BranchDiffFileEntry[]>([]);
-  const [diffListLoading, setDiffListLoading] = useState(false);
-  const [diffListError, setDiffListError] = useState<string | null>(null);
-  const [diffPatchText, setDiffPatchText] = useState<string | null>(null);
-  const [diffPatchLoading, setDiffPatchLoading] = useState(false);
-  const [diffPatchError, setDiffPatchError] = useState<string | null>(null);
-  const [diffLoadGeneration, setDiffLoadGeneration] = useState(0);
-  const [diffStyle, setDiffStyle] = useState<"unified" | "split">("unified");
+  const [agentDialogOpen, setAgentDialogOpen] = useState(false);
+  const [agentDialogBusy, setAgentDialogBusy] = useState(false);
+  const [agentDialogError, setAgentDialogError] = useState<string | null>(null);
+
   const [codeThemePick, setCodeThemePick] = useState<CodeViewerThemePick>(() => {
     try {
       return parseCodeThemePick(
@@ -254,11 +245,35 @@ export default function App() {
       return "auto";
     }
   });
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
 
-  const lastAutoOpenedRoot = useRef<string | null>(null);
+  const activeTabIdRef = useRef<string | null>(null);
+  activeTabIdRef.current = activeTabId;
+
+  const readmeOpenedKeyRef = useRef<string>("");
   const shellRef = useRef<HTMLDivElement | null>(null);
   const palettePickFocusViewerPathRef = useRef<string | null>(null);
   const prefersLightChrome = useSystemAppearanceLight();
+
+  const activeTab = useMemo(
+    () => tabs.find((t) => t.id === activeTabId) ?? null,
+    [tabs, activeTabId],
+  );
+
+  const patchTab = useCallback((id: string, patch: Partial<WorkspaceTabState>) => {
+    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }, []);
+
+  const fileTreeRoot = useMemo(() => {
+    if (!projectRoot || !activeTab) return null;
+    if (activeTab.viewMode === "agent" && activeTab.agentWorktree) {
+      return activeTab.agentWorktree.path;
+    }
+    return projectRoot;
+  }, [projectRoot, activeTab]);
+
+  const defaultStartPoint =
+    defaultBranchInfo?.startPoint ?? "origin/main";
 
   useEffect(() => {
     try {
@@ -276,6 +291,157 @@ export default function App() {
   const treeChromeTheme =
     prefersLightChrome ? "pierre-light" : "pierre-dark";
 
+  useEffect(() => {
+    setAgentDialogOpen(false);
+    setAgentDialogError(null);
+  }, [activeTabId]);
+
+  /** Bind repository + default branch; reset tabs (one project per window). */
+  useEffect(() => {
+    if (!projectRoot) {
+      setDefaultBranchInfo(null);
+      setTabs([]);
+      setActiveTabId(null);
+      setScan(null);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = await invoke<{
+          shortName: string;
+          startPoint: string;
+        }>("git_resolve_default_branch", { rootPath: projectRoot });
+        if (cancelled) return;
+        setDefaultBranchInfo({
+          shortName: info.shortName,
+          startPoint: info.startPoint,
+        });
+        const id = crypto.randomUUID();
+        setTabs([
+          createWorkspaceTab(id, "Workspace 1", info.startPoint),
+        ]);
+        setActiveTabId(id);
+      } catch {
+        if (cancelled) return;
+        setDefaultBranchInfo({
+          shortName: "main",
+          startPoint: "origin/main",
+        });
+        const id = crypto.randomUUID();
+        setTabs([
+          createWorkspaceTab(id, "Workspace 1", "origin/main"),
+        ]);
+        setActiveTabId(id);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectRoot]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key?.toLowerCase() !== "k") return;
+      if (!activeTabId) return;
+      e.preventDefault();
+      setTabs((ts) =>
+        ts.map((t) =>
+          t.id === activeTabId
+            ? { ...t, filePaletteOpen: !t.filePaletteOpen }
+            : t,
+        ),
+      );
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeTabId]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const k = e.key?.toLowerCase() ?? "";
+      if (k !== "," && e.code !== "Comma") return;
+      if (preferencesShortcutIgnoreTypingTarget(e.target)) return;
+      e.preventDefault();
+      setPreferencesOpen((o) => !o);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const switchProject = useCallback(() => {
+    try {
+      localStorage.removeItem(LAST_ROOT_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+    setProjectRoot(null);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      if (!fileTreeRoot) {
+        setScan(null);
+        setScanning(false);
+        return;
+      }
+      setScan(null);
+      if (activeTabId) {
+        patchTab(activeTabId, {
+          fileError: null,
+          selectedRel: null,
+          fileContents: null,
+        });
+      }
+      setScanning(true);
+      try {
+        const result = await scanWorkspaceRoot(fileTreeRoot);
+        if (!cancelled) setScan(result);
+      } catch (e) {
+        if (!cancelled) {
+          setScan(null);
+          if (activeTabId) {
+            patchTab(activeTabId, {
+              fileError:
+                e instanceof Error ? e.message : "Failed to scan directory.",
+            });
+          }
+        }
+      } finally {
+        if (!cancelled) setScanning(false);
+      }
+    }
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [fileTreeRoot, activeTabId, patchTab]);
+
+  const viewMode = activeTab?.viewMode ?? "browse";
+  const diffBaseRef = activeTab?.diffBaseRef ?? defaultStartPoint;
+  const diffHeadRef = activeTab?.diffHeadRef ?? "HEAD";
+  const diffLoadGeneration = activeTab?.diffLoadGeneration ?? 0;
+  const diffStyle = activeTab?.diffStyle ?? "unified";
+  const selectedRel = activeTab?.selectedRel ?? null;
+  const branchList = activeTab?.branchList ?? null;
+  const diffEntries = activeTab?.diffEntries ?? [];
+  const diffListLoading = activeTab?.diffListLoading ?? false;
+  const diffListError = activeTab?.diffListError ?? null;
+  const diffPatchText = activeTab?.diffPatchText ?? null;
+  const diffPatchLoading = activeTab?.diffPatchLoading ?? false;
+  const diffPatchError = activeTab?.diffPatchError ?? null;
+  const sidebarOpen = activeTab?.sidebarOpen ?? true;
+  const filePaletteOpen = activeTab?.filePaletteOpen ?? false;
+  const fileLoading = activeTab?.fileLoading ?? false;
+  const fileContents = activeTab?.fileContents ?? null;
+  const fileError = activeTab?.fileError ?? null;
+  const agentWorktree = activeTab?.agentWorktree ?? null;
+
   const branchRefOptions = useMemo(
     () =>
       unionGitRefOptions(
@@ -283,12 +449,13 @@ export default function App() {
         branchList?.branches,
         diffBaseRef,
         diffHeadRef,
+        defaultBranchInfo?.startPoint,
         "origin/main",
         "main",
         "master",
         "HEAD",
       ),
-    [branchList, diffBaseRef, diffHeadRef],
+    [branchList, diffBaseRef, diffHeadRef, defaultBranchInfo?.startPoint],
   );
 
   const diffTreeScan = useMemo((): ScanWorkspaceResult | null => {
@@ -318,136 +485,77 @@ export default function App() {
         : null;
 
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      if (e.key?.toLowerCase() !== "k") return;
-      e.preventDefault();
-      setFilePaletteOpen((o) => !o);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function run() {
-      if (!rootPath) {
-        setScan(null);
-        setScanning(false);
-        return;
+    if (!projectRoot || !activeTabId || viewMode !== "diff") {
+      if (activeTabId) {
+        patchTab(activeTabId, {
+          branchList: null,
+          diffEntries: [],
+          diffListError: null,
+          diffListLoading: false,
+          diffPatchText: null,
+          diffPatchError: null,
+          diffPatchLoading: false,
+        });
       }
-      setScan(null);
-      setFileError(null);
-      setSelectedRel(null);
-      setFileContents(null);
-      setScanning(true);
-      try {
-        const result = await scanWorkspaceRoot(rootPath);
-        if (!cancelled) setScan(result);
-      } catch (e) {
-        if (!cancelled) {
-          setScan(null);
-          setFileError(
-            e instanceof Error ? e.message : "Failed to scan directory.",
-          );
-        }
-      } finally {
-        if (!cancelled) setScanning(false);
-      }
-    }
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [rootPath]);
-
-  useEffect(() => {
-    if (!rootPath || viewMode !== "diff") {
-      setBranchList(null);
-      setDiffEntries([]);
-      setDiffListError(null);
-      setDiffListLoading(false);
-      setDiffPatchText(null);
-      setDiffPatchError(null);
-      setDiffPatchLoading(false);
       return;
     }
 
     let cancelled = false;
-    setDiffListLoading(true);
-    setDiffListError(null);
+    const tid = activeTabId;
+    patchTab(tid, {
+      diffListLoading: true,
+      diffListError: null,
+    });
+
     (async () => {
       try {
         const bl = await invoke<GitBranchListPayload>("git_branch_list", {
-          rootPath,
+          rootPath: projectRoot,
         });
-        if (cancelled) return;
-        setBranchList(bl);
+        if (cancelled || activeTabIdRef.current !== tid) return;
+        patchTab(tid, { branchList: bl });
         if (!bl.ok) {
-          setDiffEntries([]);
-          setDiffListError(bl.error ?? "Could not read repository branches.");
+          patchTab(tid, {
+            diffEntries: [],
+            diffListError: bl.error ?? "Could not read repository branches.",
+            diffListLoading: false,
+          });
           return;
         }
         const files = await invoke<BranchDiffFileEntry[]>(
           "git_branch_diff_files",
           {
-            rootPath,
+            rootPath: projectRoot,
             baseRef: diffBaseRef,
             headRef: diffHeadRef,
           },
         );
-        if (cancelled) return;
-        setDiffEntries(files);
-        setSelectedRel((prev) => {
-          if (prev && files.some((f) => f.path === prev)) return prev;
-          return files[0]?.path ?? null;
-        });
-        setDiffListError(null);
+        if (cancelled || activeTabIdRef.current !== tid) return;
+        setTabs((ts) =>
+          ts.map((t) => {
+            if (t.id !== tid) return t;
+            const cur = t.selectedRel;
+            const nextSel =
+              cur && files.some((f) => f.path === cur)
+                ? cur
+                : files[0]?.path ?? null;
+            return {
+              ...t,
+              diffEntries: files,
+              diffListError: null,
+              diffListLoading: false,
+              selectedRel: nextSel,
+            };
+          }),
+        );
       } catch (e) {
-        if (!cancelled) {
-          setDiffEntries([]);
-          setDiffListError(e instanceof Error ? e.message : String(e));
+        if (!cancelled && activeTabIdRef.current === tid) {
+          patchTab(tid, {
+            diffEntries: [],
+            diffListError: e instanceof Error ? e.message : String(e),
+            diffListLoading: false,
+          });
         }
-      } finally {
-        if (!cancelled) setDiffListLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [rootPath, viewMode, diffBaseRef, diffHeadRef, diffLoadGeneration]);
-
-  useEffect(() => {
-    if (!rootPath || viewMode !== "diff" || !selectedRel) {
-      setDiffPatchText(null);
-      setDiffPatchError(null);
-      setDiffPatchLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setDiffPatchLoading(true);
-    setDiffPatchError(null);
-    setDiffPatchText(null);
-    (async () => {
-      try {
-        const patch = await invoke<string>("git_branch_diff_patch", {
-          rootPath,
-          baseRef: diffBaseRef,
-          headRef: diffHeadRef,
-          path: selectedRel,
-        });
-        if (!cancelled) {
-          setDiffPatchText(patch);
-          setDiffPatchError(null);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setDiffPatchText(null);
-          setDiffPatchError(e instanceof Error ? e.message : String(e));
-        }
-      } finally {
-        if (!cancelled) setDiffPatchLoading(false);
       }
     })();
 
@@ -455,90 +563,154 @@ export default function App() {
       cancelled = true;
     };
   }, [
-    rootPath,
+    projectRoot,
+    activeTabId,
+    viewMode,
+    diffBaseRef,
+    diffHeadRef,
+    diffLoadGeneration,
+    patchTab,
+  ]);
+
+  useEffect(() => {
+    if (!projectRoot || !activeTabId || viewMode !== "diff" || !selectedRel) {
+      if (activeTabId) {
+        patchTab(activeTabId, {
+          diffPatchText: null,
+          diffPatchError: null,
+          diffPatchLoading: false,
+        });
+      }
+      return;
+    }
+
+    let cancelled = false;
+    const tid = activeTabId;
+    patchTab(tid, {
+      diffPatchLoading: true,
+      diffPatchError: null,
+      diffPatchText: null,
+    });
+
+    (async () => {
+      try {
+        const patch = await invoke<string>("git_branch_diff_patch", {
+          rootPath: projectRoot,
+          baseRef: diffBaseRef,
+          headRef: diffHeadRef,
+          path: selectedRel,
+        });
+        if (!cancelled && activeTabIdRef.current === tid) {
+          patchTab(tid, {
+            diffPatchText: patch,
+            diffPatchError: null,
+            diffPatchLoading: false,
+          });
+        }
+      } catch (e) {
+        if (!cancelled && activeTabIdRef.current === tid) {
+          patchTab(tid, {
+            diffPatchText: null,
+            diffPatchError: e instanceof Error ? e.message : String(e),
+            diffPatchLoading: false,
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    projectRoot,
+    activeTabId,
     viewMode,
     selectedRel,
     diffBaseRef,
     diffHeadRef,
     diffLoadGeneration,
+    patchTab,
   ]);
 
   const loadFileRel = useCallback(
     async (rel: string | null) => {
-      if (!rootPath || !rel) {
-        setFileContents(null);
-        setFileError(null);
-        setFileLoading(false);
+      if (!activeTabId || !fileTreeRoot || !rel) {
+        if (activeTabId) {
+          patchTab(activeTabId, {
+            fileContents: null,
+            fileError: null,
+            fileLoading: false,
+          });
+        }
         return;
       }
-      setFileError(null);
-      setFileContents(null);
-      setFileLoading(true);
+      patchTab(activeTabId, {
+        fileError: null,
+        fileContents: null,
+        fileLoading: true,
+      });
       try {
-        const abs = await repoPathToAbsolute(rootPath, rel);
+        const abs = await repoPathToAbsolute(fileTreeRoot, rel);
         const result = await loadTextFileAbsolute(abs);
-        if (result.ok) setFileContents(result.content);
-        else {
-          setFileContents(null);
-          setFileError(result.message);
+        if (result.ok) {
+          patchTab(activeTabId, {
+            fileContents: result.content,
+            fileError: null,
+            fileLoading: false,
+          });
+        } else {
+          patchTab(activeTabId, {
+            fileContents: null,
+            fileError: result.message,
+            fileLoading: false,
+          });
         }
       } catch (e) {
-        setFileContents(null);
-        setFileError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setFileLoading(false);
+        patchTab(activeTabId, {
+          fileContents: null,
+          fileError: e instanceof Error ? e.message : String(e),
+          fileLoading: false,
+        });
       }
     },
-    [rootPath],
+    [activeTabId, fileTreeRoot, patchTab],
   );
 
   useEffect(() => {
-    if (!rootPath) {
-      lastAutoOpenedRoot.current = null;
-      setSelectedRel(null);
-      setFileContents(null);
-      setFileError(null);
+    if (!scan || !activeTabId || viewMode !== "browse" || !fileTreeRoot) {
       return;
     }
-
-    if (!scan) return;
-
-    if (lastAutoOpenedRoot.current === rootPath) return;
-    lastAutoOpenedRoot.current = rootPath;
-
-    if (viewMode !== "browse") return;
-
+    const key = `${activeTabId}:${fileTreeRoot}`;
+    if (readmeOpenedKeyRef.current === key) return;
+    readmeOpenedKeyRef.current = key;
     const preferred = scan.readmePath;
-    setSelectedRel(preferred ?? null);
+    patchTab(activeTabId, { selectedRel: preferred ?? null });
     void loadFileRel(preferred ?? null);
-  }, [rootPath, scan, loadFileRel, viewMode]);
+  }, [scan, activeTabId, viewMode, fileTreeRoot, loadFileRel, patchTab]);
 
   const onSelectFileRel = useCallback(
     (relPath: string | null) => {
-      setSelectedRel(relPath);
+      if (!activeTabId) return;
+      patchTab(activeTabId, { selectedRel: relPath });
       if (viewMode === "browse") void loadFileRel(relPath);
     },
-    [loadFileRel, viewMode],
+    [activeTabId, loadFileRel, patchTab, viewMode],
   );
 
-  /** When palette opens a file, move keyboard focus into the viewer after load. */
   useEffect(() => {
     const pending = palettePickFocusViewerPathRef.current;
-    if (pending === null) return;
+    if (pending === null || !activeTabId) return;
 
     if (viewMode === "browse") {
       if (fileLoading) return;
-
       if (selectedRel !== pending) {
         palettePickFocusViewerPathRef.current = null;
         return;
       }
-
       if (fileContents === null || fileError) {
         palettePickFocusViewerPathRef.current = null;
         return;
       }
-
       palettePickFocusViewerPathRef.current = null;
       requestAnimationFrame(() => {
         focusCodeViewerScrollSurface();
@@ -547,22 +719,20 @@ export default function App() {
     }
 
     if (diffPatchLoading) return;
-
     if (selectedRel !== pending) {
       palettePickFocusViewerPathRef.current = null;
       return;
     }
-
     if (diffPatchError) {
       palettePickFocusViewerPathRef.current = null;
       return;
     }
-
     palettePickFocusViewerPathRef.current = null;
     requestAnimationFrame(() => {
       focusCodeViewerScrollSurface();
     });
   }, [
+    activeTabId,
     viewMode,
     selectedRel,
     fileLoading,
@@ -572,54 +742,91 @@ export default function App() {
     diffPatchError,
   ]);
 
-  const pickLocalFolder = async () => {
-    setFileError(null);
-    setCloneError(null);
-    try {
-      const dir = await open({ directory: true, multiple: false });
-      if (!dir) return;
-      setRootPath(dir);
-      try {
-        localStorage.setItem(LAST_ROOT_STORAGE_KEY, dir);
-      } catch {
-        /* ignore storage failures */
-      }
-    } catch (e) {
-      setFileError(e instanceof Error ? e.message : String(e));
-    }
-  };
+  const addTab = useCallback(() => {
+    const id = crypto.randomUUID();
+    setTabs((ts) => {
+      const n = ts.length + 1;
+      return [
+        ...ts,
+        createWorkspaceTab(id, `Workspace ${n}`, defaultStartPoint),
+      ];
+    });
+    setActiveTabId(id);
+    readmeOpenedKeyRef.current = "";
+  }, [defaultStartPoint]);
 
-  const cloneFromGithub = async () => {
-    setCloneError(null);
-    setBusy(true);
-    try {
-      const path = await invoke<string>("git_clone_repo", {
-        url: cloneUrl.trim(),
+  const closeTab = useCallback(
+    (id: string) => {
+      setTabs((ts) => {
+        if (ts.length <= 1) return ts;
+        const i = ts.findIndex((t) => t.id === id);
+        const next = ts.filter((t) => t.id !== id);
+        const fallback =
+          next[Math.max(0, i - 1)]?.id ?? next[0]?.id ?? null;
+        setActiveTabId((cur) => (cur === id ? fallback : cur));
+        readmeOpenedKeyRef.current = "";
+        return next;
       });
-      setRootPath(path);
+    },
+    [],
+  );
+
+  const onEnterAgentThisRepository = useCallback(() => {
+    if (!activeTabId) return;
+    setAgentDialogError(null);
+    patchTab(activeTabId, {
+      viewMode: "agent",
+      agentWorktree: null,
+    });
+    setAgentDialogOpen(false);
+  }, [activeTabId, patchTab]);
+
+  const onConfirmAgentPurpose = useCallback(
+    async (purpose: string) => {
+      if (!projectRoot || !activeTabId) return;
+      setAgentDialogError(null);
+      setAgentDialogBusy(true);
       try {
-        localStorage.setItem(LAST_ROOT_STORAGE_KEY, path);
-      } catch {
-        /* ignore */
+        const wt = await invoke<{ path: string; branch: string }>(
+          "git_create_agent_worktree",
+          {
+            rootPath: projectRoot,
+            purpose,
+            baseStartPoint: defaultStartPoint,
+          },
+        );
+        const shortLabel =
+          purpose.length > 26 ? `${purpose.slice(0, 26)}…` : purpose;
+        patchTab(activeTabId, {
+          agentWorktree: {
+            path: wt.path,
+            branch: wt.branch,
+            purpose,
+          },
+          viewMode: "agent",
+          label: shortLabel,
+        });
+        setAgentDialogOpen(false);
+      } catch (e) {
+        setAgentDialogError(
+          typeof e === "string"
+            ? e
+            : e instanceof Error
+              ? e.message
+              : String(e),
+        );
+      } finally {
+        setAgentDialogBusy(false);
       }
-      setCloneUrl("");
-      setCloneOpen(false);
-    } catch (e) {
-      setCloneError(
-        typeof e === "string" ? e : e instanceof Error ? e.message : String(e),
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
+    },
+    [projectRoot, activeTabId, defaultStartPoint, patchTab],
+  );
 
   const breadcrumb =
     viewMode === "agent"
-      ? rootPath
-        ? `Agent · ${
-            rootPath.split(/[/\\]/).filter(Boolean).pop() ?? rootPath
-          }`
-        : "—"
+      ? agentWorktree
+        ? `Agent · ${agentWorktree.branch}`
+        : "Agent · this repository"
       : viewMode === "diff"
         ? selectedRel != null
           ? `${diffBaseRef} … ${diffHeadRef} · ${selectedRel}`
@@ -627,20 +834,75 @@ export default function App() {
             ? "Loading changed files…"
             : "—"
         : (selectedRel ??
-          (rootPath && scanning ? "Indexing workspace…" : "—"));
+          (projectRoot && scanning ? "Indexing workspace…" : "—"));
 
-  const indexingWorkspace = Boolean(rootPath && scanning);
+  const indexingWorkspace = Boolean(projectRoot && scanning);
   const diffSidebarLoading =
     viewMode === "diff" &&
-    Boolean(rootPath) &&
+    Boolean(projectRoot) &&
     diffListLoading &&
     branchList?.ok !== false;
 
   const treeBusy =
     viewMode !== "agent" && (indexingWorkspace || diffSidebarLoading);
 
+  if (!projectRoot) {
+    return (
+      <div ref={shellRef} className="app-shell">
+        <ProjectOpenScreen
+          onProjectChosen={(path) => {
+            try {
+              localStorage.setItem(LAST_ROOT_STORAGE_KEY, path);
+            } catch {
+              /* ignore */
+            }
+            setProjectRoot(path);
+          }}
+        />
+        <PreferencesDialog
+          open={preferencesOpen}
+          onOpenChange={setPreferencesOpen}
+          projectRoot={null}
+          codeThemePick={codeThemePick}
+          onThemeChange={setCodeThemePick}
+          onSwitchProject={switchProject}
+        />
+        <FocusMapOverlay
+          disabled={true}
+          landmarksRootRef={shellRef}
+        />
+      </div>
+    );
+  }
+
+  if (!activeTab) {
+    return (
+      <div ref={shellRef} className="app-shell">
+        <div className="pane-placeholder" style={{ flex: 1, margin: 24 }}>
+          Loading project…
+        </div>
+        <PreferencesDialog
+          open={preferencesOpen}
+          onOpenChange={setPreferencesOpen}
+          projectRoot={projectRoot}
+          codeThemePick={codeThemePick}
+          onThemeChange={setCodeThemePick}
+          onSwitchProject={switchProject}
+        />
+      </div>
+    );
+  }
+
   return (
     <div ref={shellRef} className="app-shell">
+      <TabStrip
+        tabs={tabs}
+        activeTabId={activeTabId}
+        onSelect={setActiveTabId}
+        onNewTab={addTab}
+        onCloseTab={closeTab}
+      />
+
       <header
         className="app-toolbar"
         data-focus-landmark=""
@@ -648,77 +910,24 @@ export default function App() {
         tabIndex={-1}
       >
         <div className="toolbar-primary">
-          <span className="app-brand">Codar</span>
-          <span className="toolbar-rule" aria-hidden />
-          <div className="toolbar-cluster">
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={pickLocalFolder}
-              disabled={busy}
-            >
-              Open…
-            </Button>
-            <Popover open={cloneOpen} onOpenChange={setCloneOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy}
-                >
-                  Clone
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                className="w-[min(340px,calc(100vw-48px))]"
-              >
-                <form
-                  className="flex flex-wrap items-center gap-2"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void cloneFromGithub();
-                  }}
-                >
-                  <input
-                    type="url"
-                    name="github-url"
-                    placeholder="https://github.com/owner/repo"
-                    value={cloneUrl}
-                    onChange={(e) => setCloneUrl(e.currentTarget.value)}
-                    autoComplete="off"
-                    disabled={busy}
-                    className="min-w-[160px] flex-1 rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-sm text-zinc-900 shadow-sm outline-none focus:ring-2 focus:ring-blue-500/35 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
-                  />
-                  <Button
-                    type="submit"
-                    variant="primary"
-                    size="sm"
-                    disabled={busy || !cloneUrl.trim()}
-                  >
-                    Go
-                  </Button>
-                </form>
-              </PopoverContent>
-            </Popover>
-          </div>
-          <span className="toolbar-rule" aria-hidden />
           <ViewModeToggle
             value={viewMode}
-            disabled={!rootPath}
+            disabled={!projectRoot}
             onChange={(v) => {
+              if (!activeTabId) return;
               if (v === "browse") {
-                setViewMode("browse");
+                patchTab(activeTabId, { viewMode: "browse" });
                 if (scan?.readmePath) {
-                  setSelectedRel(scan.readmePath);
+                  patchTab(activeTabId, {
+                    selectedRel: scan.readmePath,
+                  });
                   void loadFileRel(scan.readmePath);
                 }
               } else if (v === "diff") {
-                setViewMode("diff");
+                patchTab(activeTabId, { viewMode: "diff" });
               } else {
-                setViewMode("agent");
+                setAgentDialogError(null);
+                setAgentDialogOpen(true);
               }
             }}
           />
@@ -730,65 +939,63 @@ export default function App() {
           </span>
           <span className="toolbar-rule" aria-hidden />
           <div className="toolbar-cluster toolbar-cluster--end">
-            {viewMode !== "agent" ? (
-              <>
-                <Select
-                  value={codeThemePick}
-                  onValueChange={(v) => {
-                    setCodeThemePick(
-                      v === "auto" || isKnownCodeViewerTheme(v) ? v : "auto",
-                    );
-                  }}
-                >
-                  <SelectTrigger
-                    id="code-theme-select"
-                    className="h-7 max-w-[min(160px,28vw)] text-xs"
-                    aria-label="Syntax highlighting theme"
-                    title="Syntax highlighting (Shiki)"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="auto">Auto theme</SelectItem>
-                    {CODE_VIEWER_THEME_OPTIONS.map((id) => (
-                      <SelectItem key={id} value={id}>
-                        {codeViewerThemeLabel(id)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  title="Search files — ⌘K or Ctrl+K"
-                  aria-label="Search files"
-                  onClick={() => setFilePaletteOpen((o) => !o)}
-                >
-                  Find
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  aria-expanded={sidebarOpen}
-                  aria-label={sidebarOpen ? "Hide file tree" : "Show file tree"}
-                  onClick={() => setSidebarOpen((o) => !o)}
-                >
-                  {sidebarOpen ? "Hide tree" : "Tree"}
-                </Button>
-              </>
-            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              title="Preferences — ⌘, or Ctrl+,"
+              aria-label="Preferences"
+              onClick={() => {
+                setPreferencesOpen(true);
+              }}
+            >
+              Preferences
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              title="Search files — ⌘K or Ctrl+K"
+              aria-label="Search files"
+              onClick={() => {
+                if (!activeTabId) return;
+                patchTab(activeTabId, {
+                  filePaletteOpen: !filePaletteOpen,
+                });
+              }}
+            >
+              Find
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-expanded={sidebarOpen}
+              aria-label={sidebarOpen ? "Hide file tree" : "Show file tree"}
+              onClick={() => {
+                if (!activeTabId) return;
+                patchTab(activeTabId, {
+                  sidebarOpen: !sidebarOpen,
+                });
+              }}
+            >
+              {sidebarOpen ? "Hide tree" : "Tree"}
+            </Button>
           </div>
         </div>
-        {viewMode === "diff" && rootPath ? (
+        {viewMode === "diff" && projectRoot ? (
           <div
             className="toolbar-diff-bar"
             title="Compare git refs (two-dot). Refresh after fetch."
           >
             <label className="toolbar-diff-field">
               <span className="toolbar-diff-field-label">Base</span>
-              <Select value={diffBaseRef} onValueChange={setDiffBaseRef}>
+              <Select
+                value={diffBaseRef}
+                onValueChange={(v) => {
+                  if (activeTabId) patchTab(activeTabId, { diffBaseRef: v });
+                }}
+              >
                 <SelectTrigger className="h-[30px] max-w-[min(148px,24vw)] text-xs">
                   <SelectValue />
                 </SelectTrigger>
@@ -803,7 +1010,12 @@ export default function App() {
             </label>
             <label className="toolbar-diff-field">
               <span className="toolbar-diff-field-label">Compare</span>
-              <Select value={diffHeadRef} onValueChange={setDiffHeadRef}>
+              <Select
+                value={diffHeadRef}
+                onValueChange={(v) => {
+                  if (activeTabId) patchTab(activeTabId, { diffHeadRef: v });
+                }}
+              >
                 <SelectTrigger className="h-[30px] max-w-[min(148px,24vw)] text-xs">
                   <SelectValue />
                 </SelectTrigger>
@@ -829,7 +1041,13 @@ export default function App() {
                 className="h-[30px] w-[30px] shrink-0 text-base"
                 aria-label="Refresh diff"
                 title="Reload branches and changed files"
-                onClick={() => setDiffLoadGeneration((g) => g + 1)}
+                onClick={() => {
+                  if (!activeTabId) return;
+                  patchTab(activeTabId, {
+                    diffLoadGeneration:
+                      (activeTab?.diffLoadGeneration ?? 0) + 1,
+                  });
+                }}
               >
                 ↻
               </Button>
@@ -838,9 +1056,12 @@ export default function App() {
               <span className="toolbar-diff-field-label">Layout</span>
               <Select
                 value={diffStyle}
-                onValueChange={(v) =>
-                  setDiffStyle(v === "split" ? "split" : "unified")
-                }
+                onValueChange={(v) => {
+                  if (!activeTabId) return;
+                  patchTab(activeTabId, {
+                    diffStyle: v === "split" ? "split" : "unified",
+                  });
+                }}
               >
                 <SelectTrigger
                   className="h-[30px] max-w-[min(148px,24vw)] text-xs"
@@ -858,11 +1079,6 @@ export default function App() {
         ) : null}
       </header>
 
-      {cloneError ? (
-        <div className="error-banner" role="alert">
-          {cloneError}
-        </div>
-      ) : null}
       {fileError && (viewMode === "browse" || viewMode === "agent") ? (
         <div className="error-banner" role="alert">
           {fileError}
@@ -878,13 +1094,38 @@ export default function App() {
         className={`app-body${viewMode === "agent" ? " app-body--agent" : ""}`}
         aria-busy={treeBusy || undefined}
       >
-        {viewMode === "agent" && rootPath ? (
+        {viewMode === "agent" ? (
           <section className="agent-panel" tabIndex={-1}>
             <header>
-              Shell session in the repo root — switch mode to end the session.
+              {agentWorktree ? (
+                <>
+                  <span className="text-zinc-600 dark:text-zinc-400">
+                    {agentWorktree.purpose}
+                  </span>
+                  <span className="mx-2 text-zinc-400">·</span>
+                  <span className="font-mono text-xs opacity-90">
+                    {agentWorktree.path}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="text-zinc-600 dark:text-zinc-400">
+                    This repository
+                  </span>
+                  <span className="mx-2 text-zinc-400">·</span>
+                  <span className="font-mono text-xs opacity-90">
+                    {projectRoot}
+                  </span>
+                </>
+              )}
             </header>
             <AgentTerminal
-              rootPath={rootPath}
+              key={
+                agentWorktree
+                  ? `${activeTabId}:${agentWorktree.path}`
+                  : `${activeTabId}:${projectRoot}`
+              }
+              rootPath={agentWorktree?.path ?? projectRoot}
               lightChrome={prefersLightChrome}
             />
           </section>
@@ -911,7 +1152,7 @@ export default function App() {
                   treeScanForPane.paths.length > 0 ? (
                   <RepoTreePane
                     scan={treeScanForPane}
-                    workspaceKey={rootPath ?? ""}
+                    workspaceKey={fileTreeRoot ?? projectRoot}
                     treeChromeTheme={treeChromeTheme}
                     onSelectFileRel={onSelectFileRel}
                     diffMode={
@@ -984,8 +1225,8 @@ export default function App() {
                 />
               ) : (
                 <div className="pane-placeholder">
-                  {!rootPath
-                    ? "Open a local folder or clone a GitHub repo to begin."
+                  {!projectRoot
+                    ? "Open a repository to begin."
                     : !selectedRel && !fileError
                       ? "Choose a file from the tree."
                       : null}
@@ -996,14 +1237,45 @@ export default function App() {
         )}
       </div>
 
+      <AgentPurposeDialog
+        open={agentDialogOpen}
+        onOpenChange={(open) => {
+          if (agentDialogBusy) return;
+          setAgentDialogOpen(open);
+          if (!open) setAgentDialogError(null);
+        }}
+        onConfirm={(purpose) => {
+          void onConfirmAgentPurpose(purpose);
+        }}
+        onUseThisRepository={onEnterAgentThisRepository}
+        busy={agentDialogBusy}
+        error={agentDialogError}
+        defaultBranchLabel={
+          defaultBranchInfo
+            ? `${defaultBranchInfo.shortName} (${defaultBranchInfo.startPoint})`
+            : defaultStartPoint
+        }
+      />
+
+      <PreferencesDialog
+        open={preferencesOpen}
+        onOpenChange={setPreferencesOpen}
+        projectRoot={projectRoot}
+        codeThemePick={codeThemePick}
+        onThemeChange={setCodeThemePick}
+        onSwitchProject={switchProject}
+      />
+
       <FocusMapOverlay
-        disabled={filePaletteOpen}
+        disabled={filePaletteOpen || preferencesOpen}
         landmarksRootRef={shellRef}
       />
 
       <FileSearchPalette
         open={filePaletteOpen}
-        onClose={() => setFilePaletteOpen(false)}
+        onClose={() => {
+          if (activeTabId) patchTab(activeTabId, { filePaletteOpen: false });
+        }}
         filePaths={
           viewMode === "diff" && diffEntries.length > 0
             ? new Set(diffEntries.map((e) => e.path))
@@ -1011,9 +1283,10 @@ export default function App() {
         }
         onPick={(path) => {
           palettePickFocusViewerPathRef.current = path;
+          if (!activeTabId) return;
           if (viewMode === "agent") {
-            setViewMode("browse");
-            setSelectedRel(path);
+            patchTab(activeTabId, { viewMode: "browse" });
+            patchTab(activeTabId, { selectedRel: path });
             void loadFileRel(path);
             return;
           }

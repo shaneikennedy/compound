@@ -117,6 +117,138 @@ html:not([data-scrolling="true"]) *::-webkit-scrollbar-thumb:hover {
   background: var(--app-bg);
 }
 
+.project-open-screen {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  min-height: 0;
+}
+
+.project-open-card {
+  width: 100%;
+  max-width: 440px;
+  padding: 28px 24px;
+  border-radius: 12px;
+  border: 1px solid var(--app-border);
+  background: var(--app-surface);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.12),
+    0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.project-open-title {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 650;
+  color: var(--app-text);
+}
+
+.project-open-lead {
+  margin: 0 0 20px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--app-muted);
+}
+
+.project-open-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.project-open-error {
+  margin: 16px 0 0;
+  font-size: 13px;
+  color: #f44747;
+}
+
+@media (prefers-color-scheme: light) {
+  .project-open-error {
+    color: #b00020;
+  }
+}
+
+.tab-strip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  padding: 6px 10px 0;
+  border-bottom: 1px solid var(--pierre-chrome-border);
+  background: color-mix(in srgb, var(--app-bg) 35%, var(--app-surface));
+}
+
+.tab-strip-scroll {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+
+.tab-strip-item {
+  display: inline-flex;
+  align-items: center;
+  max-width: 200px;
+  border-radius: 6px 6px 0 0;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+}
+
+.tab-strip-item--active {
+  background: var(--app-surface);
+  border-color: var(--app-border);
+  border-bottom-color: var(--app-surface);
+  margin-bottom: -1px;
+}
+
+.tab-strip-label {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  margin: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--app-muted);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-strip-item--active .tab-strip-label {
+  color: var(--app-text);
+  font-weight: 600;
+}
+
+.tab-strip-close {
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--app-muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.tab-strip-close:hover {
+  color: var(--app-text);
+  background: color-mix(in srgb, var(--app-border) 40%, transparent);
+}
+
+.tab-strip-new {
+  align-self: center;
+  margin-bottom: 4px;
+}
+
 .app-toolbar {
   flex-shrink: 0;
   display: flex;
@@ -142,14 +274,6 @@ html:not([data-scrolling="true"]) *::-webkit-scrollbar-thumb:hover {
   padding: 8px 12px 10px;
   border-top: 1px solid color-mix(in srgb, var(--app-border) 65%, transparent);
   background: color-mix(in srgb, var(--app-bg) 55%, var(--app-surface));
-}
-
-.app-brand {
-  font-size: 13px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  color: var(--app-text);
-  user-select: none;
 }
 
 .toolbar-rule {
@@ -313,6 +437,10 @@ html:not([data-scrolling="true"]) *::-webkit-scrollbar-thumb:hover {
 
 .agent-panel > header {
   flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--app-border);
   font-size: 12px;

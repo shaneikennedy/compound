@@ -1,6 +1,7 @@
 import { cn } from "../../lib/utils";
+import type { ViewModeOption } from "../../tabModel";
 
-export type ViewModeOption = "browse" | "diff" | "agent";
+export type { ViewModeOption } from "../../tabModel";
 
 export function ViewModeToggle({
   value,
