@@ -5,12 +5,14 @@ import { Button } from "./ui/button";
 export function TabStrip({
   tabs,
   activeTabId,
+  tabDisplayName,
   onSelect,
   onNewTab,
   onCloseTab,
 }: {
   tabs: WorkspaceTabState[];
   activeTabId: string | null;
+  tabDisplayName: (tab: WorkspaceTabState) => string;
   onSelect: (id: string) => void;
   onNewTab: () => void;
   onCloseTab: (id: string) => void;
@@ -24,6 +26,7 @@ export function TabStrip({
       <div className="tab-strip-scroll">
         {tabs.map((t) => {
           const active = t.id === activeTabId;
+          const title = tabDisplayName(t);
           return (
             <div
               key={t.id}
@@ -37,13 +40,13 @@ export function TabStrip({
                 className="tab-strip-label"
                 onClick={() => onSelect(t.id)}
               >
-                {t.label}
+                {title}
               </button>
               {tabs.length > 1 ? (
                 <button
                   type="button"
                   className="tab-strip-close"
-                  aria-label={`Close ${t.label}`}
+                  aria-label={`Close ${title}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onCloseTab(t.id);

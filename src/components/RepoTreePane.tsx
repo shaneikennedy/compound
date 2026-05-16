@@ -85,12 +85,15 @@ const TreeBody = memo(function TreeBody({
   scan,
   treeChromeTheme,
   onSelectFileRel,
+  committedSelectedRel,
   diffMode,
   treeInstanceId,
 }: {
   scan: ScanWorkspaceResult;
   treeChromeTheme: PierreDiffThemeId;
   onSelectFileRel: (relPath: string | null) => void;
+  /** Tab state's file selection; avoids sync loops when `selectedPaths` is a new array each render. */
+  committedSelectedRel: string | null;
   diffMode: {
     paths: string[];
     gitStatus: GitStatusEntry[];
@@ -148,11 +151,16 @@ const TreeBody = memo(function TreeBody({
 
   const selectedPaths = useFileTreeSelection(model);
 
+  const primarySelectedPath =
+    selectedPaths[0] && !selectedPaths[0].endsWith("/")
+      ? selectedPaths[0]
+      : null;
+
   useEffect(() => {
-    const first = selectedPaths[0];
-    if (!first || first.endsWith("/")) return;
-    onSelectFileRel(first);
-  }, [selectedPaths, onSelectFileRel]);
+    if (!primarySelectedPath) return;
+    if (primarySelectedPath === committedSelectedRel) return;
+    onSelectFileRel(primarySelectedPath);
+  }, [primarySelectedPath, committedSelectedRel, onSelectFileRel]);
 
   useEffect(() => {
     const paneRootEl = treePaneRootRef.current;
@@ -237,6 +245,7 @@ export const RepoTreePane = memo(function RepoTreePane(props: {
   workspaceKey: string;
   treeChromeTheme: PierreDiffThemeId;
   onSelectFileRel: (relPath: string | null) => void;
+  committedSelectedRel: string | null;
   diffMode?: {
     paths: string[];
     gitStatus: GitStatusEntry[];
@@ -244,7 +253,8 @@ export const RepoTreePane = memo(function RepoTreePane(props: {
     instanceKey: string;
   } | null;
 }) {
-  const { scan, onSelectFileRel, workspaceKey, treeChromeTheme, diffMode } = props;
+  const { scan, onSelectFileRel, committedSelectedRel, workspaceKey, treeChromeTheme, diffMode } =
+    props;
   if (!scan || scan.paths.length === 0) {
     return (
       <div className="pane-placeholder">
@@ -267,6 +277,7 @@ export const RepoTreePane = memo(function RepoTreePane(props: {
       scan={scan}
       treeChromeTheme={treeChromeTheme}
       onSelectFileRel={onSelectFileRel}
+      committedSelectedRel={committedSelectedRel}
       diffMode={diffMode ?? null}
       treeInstanceId={treeInstanceId}
     />

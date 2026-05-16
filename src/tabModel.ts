@@ -37,7 +37,8 @@ export function agentShellRoot(projectRoot: string, s: AgentSession): string | n
 
 export type WorkspaceTabState = {
   id: string;
-  label: string;
+  /** Stable slot number for "Workspace n" before agent setup. */
+  workspaceIndex: number;
   viewMode: ViewModeOption;
   sidebarOpen: boolean;
   filePaletteOpen: boolean;
@@ -59,14 +60,28 @@ export type WorkspaceTabState = {
   agentSession: AgentSession;
 };
 
+/** Strip title: `Workspace n` until the agent session is chosen; then branch or default short name. */
+export function workspaceTabDisplayName(
+  tab: WorkspaceTabState,
+  defaultBranchShortName: string,
+): string {
+  if (tab.agentSession.kind === "unset") {
+    return `Workspace ${tab.workspaceIndex}`;
+  }
+  if (tab.agentSession.kind === "main_repository") {
+    return defaultBranchShortName;
+  }
+  return tab.agentSession.info.branch;
+}
+
 export function createWorkspaceTab(
   id: string,
-  label: string,
+  workspaceIndex: number,
   defaultDiffBaseRef: string,
 ): WorkspaceTabState {
   return {
     id,
-    label,
+    workspaceIndex,
     viewMode: "browse",
     sidebarOpen: true,
     filePaletteOpen: false,

@@ -2,6 +2,8 @@ import "./App.css";
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  Component,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -45,10 +47,12 @@ import {
 import {
   type BranchDiffFileEntry,
   type GitBranchListPayload,
+  type ViewModeOption,
   agentSessionConfigured,
   agentShellRoot,
   createWorkspaceTab,
   type WorkspaceTabState,
+  workspaceTabDisplayName,
 } from "./tabModel";
 
 const LAST_ROOT_STORAGE_KEY = "compound:last-repo-root";
@@ -81,6 +85,59 @@ function unionGitRefOptions(
   return [...s].sort((a, b) =>
     a.localeCompare(b, undefined, { sensitivity: "base" }),
   );
+}
+
+/** Radix Select requires `value` to match an item; clamp to avoid a hard render failure. */
+function pickGitRefForSelect(
+  value: string,
+  options: readonly string[],
+): string {
+  if (options.length === 0) return value;
+  return options.includes(value) ? value : options[0]!;
+}
+
+class WorkspaceChromeErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): { error: Error } {
+    return { error };
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div
+          className="pane-placeholder pane-error"
+          style={{ flex: 1, padding: 24, overflow: "auto" }}
+        >
+          <p style={{ marginTop: 0 }}>Workspace UI crashed to a render error.</p>
+          <pre
+            style={{
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              fontSize: 12,
+            }}
+          >
+            {this.state.error.message}
+          </pre>
+          <button
+            type="button"
+            className="mt-3 rounded-md border border-zinc-300 bg-zinc-100 px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            onClick={() => this.setState({ error: null })}
+          >
+            Dismiss
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function branchDiffToGitStatusEntry(e: BranchDiffFileEntry): GitStatusEntry {
@@ -326,7 +383,7 @@ export default function App() {
         });
         const id = crypto.randomUUID();
         setTabs([
-          createWorkspaceTab(id, "Workspace 1", info.startPoint),
+          createWorkspaceTab(id, 1, info.startPoint),
         ]);
         setActiveTabId(id);
       } catch {
@@ -337,7 +394,7 @@ export default function App() {
         });
         const id = crypto.randomUUID();
         setTabs([
-          createWorkspaceTab(id, "Workspace 1", "origin/main"),
+          createWorkspaceTab(id, 1, "origin/main"),
         ]);
         setActiveTabId(id);
       }
@@ -470,13 +527,23 @@ export default function App() {
     [branchList, diffBaseRef, diffHeadRef, defaultBranchInfo?.startPoint],
   );
 
+  const diffSelectBaseValue = useMemo(
+    () => pickGitRefForSelect(diffBaseRef, branchRefOptions),
+    [diffBaseRef, branchRefOptions],
+  );
+
+  const diffSelectHeadValue = useMemo(
+    () => pickGitRefForSelect(diffHeadRef, branchRefOptions),
+    [diffHeadRef, branchRefOptions],
+  );
+
   const diffTreeScan = useMemo((): ScanWorkspaceResult | null => {
-    if (viewMode !== "diff" || !scan) return null;
+    if (viewMode !== "diff") return null;
     if (diffEntries.length === 0) return null;
     const paths = treePathsForTouchedFiles(diffEntries.map((e) => e.path));
     const filePaths = new Set(diffEntries.map((e) => e.path));
     return { paths, filePaths, readmePath: null };
-  }, [viewMode, scan, diffEntries]);
+  }, [viewMode, diffEntries]);
 
   const diffGitStatusEntries = useMemo(
     () => diffEntries.map(branchDiffToGitStatusEntry),
@@ -754,18 +821,117 @@ export default function App() {
     diffPatchError,
   ]);
 
+  const defaultBranchShortName = defaultBranchInfo?.shortName ?? "main";
+
+  const workspaceTabTitle = useCallback(
+    (t: WorkspaceTabState) =>
+      workspaceTabDisplayName(t, defaultBranchShortName),
+    [defaultBranchShortName],
+  );
+
+  const applyViewMode = useCallback(
+    (v: ViewModeOption) => {
+      if (!activeTabId || !activeTab) return;
+      setPreferencesOpen(false);
+      setAgentDialogError(null);
+
+      if (v === "browse") {
+        setAgentDialogOpen(false);
+        patchTab(activeTabId, {
+          viewMode: "browse",
+          filePaletteOpen: false,
+        });
+        if (scan?.readmePath) {
+          patchTab(activeTabId, { selectedRel: scan.readmePath });
+          void loadFileRel(scan.readmePath);
+        }
+      } else if (v === "diff") {
+        setAgentDialogOpen(false);
+        patchTab(activeTabId, {
+          viewMode: "diff",
+          filePaletteOpen: false,
+        });
+      } else if (agentSessionConfigured(activeTab.agentSession)) {
+        setAgentDialogOpen(false);
+        patchTab(activeTabId, {
+          viewMode: "agent",
+          filePaletteOpen: false,
+        });
+      } else {
+        patchTab(activeTabId, { filePaletteOpen: false });
+        setAgentDialogOpen(true);
+      }
+    },
+    [activeTabId, activeTab, patchTab, scan, loadFileRel],
+  );
+
   const addTab = useCallback(() => {
     const id = crypto.randomUUID();
     setTabs((ts) => {
       const n = ts.length + 1;
-      return [
-        ...ts,
-        createWorkspaceTab(id, `Workspace ${n}`, defaultStartPoint),
-      ];
+      return [...ts, createWorkspaceTab(id, n, defaultStartPoint)];
     });
     setActiveTabId(id);
     readmeOpenedKeyRef.current = "";
   }, [defaultStartPoint]);
+
+  const navigateTab = useCallback(
+    (delta: -1 | 1) => {
+      if (tabs.length < 2) return;
+      const i = tabs.findIndex((t) => t.id === activeTabId);
+      if (i < 0) return;
+      const next = (i + delta + tabs.length) % tabs.length;
+      setActiveTabId(tabs[next]!.id);
+      readmeOpenedKeyRef.current = "";
+    },
+    [tabs, activeTabId],
+  );
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.altKey) return;
+      if (!projectRoot || !activeTabId || !activeTab) return;
+
+      if (e.code === "BracketLeft" || e.code === "BracketRight") {
+        e.preventDefault();
+        navigateTab(e.code === "BracketLeft" ? -1 : 1);
+        return;
+      }
+
+      if (e.shiftKey) return;
+
+      if (e.code === "KeyT") {
+        e.preventDefault();
+        addTab();
+        return;
+      }
+      if (e.code === "KeyB") {
+        e.preventDefault();
+        applyViewMode("browse");
+        return;
+      }
+      if (e.code === "KeyD") {
+        e.preventDefault();
+        applyViewMode("diff");
+        return;
+      }
+      if (e.code === "KeyA") {
+        e.preventDefault();
+        applyViewMode("agent");
+        return;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    projectRoot,
+    activeTabId,
+    activeTab,
+    addTab,
+    navigateTab,
+    applyViewMode,
+  ]);
 
   const closeTab = useCallback(
     (id: string) => {
@@ -807,8 +973,6 @@ export default function App() {
             baseStartPoint: defaultStartPoint,
           },
         );
-        const shortLabel =
-          purpose.length > 26 ? `${purpose.slice(0, 26)}…` : purpose;
         patchTab(activeTabId, {
           agentSession: {
             kind: "worktree",
@@ -819,7 +983,6 @@ export default function App() {
             },
           },
           viewMode: "agent",
-          label: shortLabel,
         });
         setAgentDialogOpen(false);
       } catch (e) {
@@ -841,7 +1004,7 @@ export default function App() {
     viewMode === "agent"
       ? agentSession.kind === "worktree"
         ? `Agent · ${agentSession.info.branch}`
-        : "Agent · this repository"
+        : `Agent · ${defaultBranchShortName}`
       : viewMode === "diff"
         ? selectedRel != null
           ? `${diffBaseRef} … ${diffHeadRef} · ${selectedRel}`
@@ -931,6 +1094,7 @@ export default function App() {
               workspaceKey={fileTreeRoot ?? projectRoot}
               treeChromeTheme={treeChromeTheme}
               onSelectFileRel={onSelectFileRel}
+              committedSelectedRel={selectedRel}
               diffMode={
                 viewMode === "diff"
                   ? {
@@ -1016,15 +1180,17 @@ export default function App() {
 
   return (
     <div ref={shellRef} className="app-shell">
-      <TabStrip
-        tabs={tabs}
-        activeTabId={activeTabId}
-        onSelect={setActiveTabId}
-        onNewTab={addTab}
-        onCloseTab={closeTab}
-      />
+      <WorkspaceChromeErrorBoundary>
+        <TabStrip
+          tabs={tabs}
+          activeTabId={activeTabId}
+          tabDisplayName={workspaceTabTitle}
+          onSelect={setActiveTabId}
+          onNewTab={addTab}
+          onCloseTab={closeTab}
+        />
 
-      <header
+        <header
         className="app-toolbar"
         data-focus-landmark=""
         data-focus-map-label="Toolbar"
@@ -1036,24 +1202,7 @@ export default function App() {
             disabled={!projectRoot}
             onChange={(v) => {
               if (!activeTabId) return;
-              if (v === "browse") {
-                patchTab(activeTabId, { viewMode: "browse" });
-                if (scan?.readmePath) {
-                  patchTab(activeTabId, {
-                    selectedRel: scan.readmePath,
-                  });
-                  void loadFileRel(scan.readmePath);
-                }
-              } else if (v === "diff") {
-                patchTab(activeTabId, { viewMode: "diff" });
-              } else {
-                setAgentDialogError(null);
-                if (agentSessionConfigured(activeTab.agentSession)) {
-                  patchTab(activeTabId, { viewMode: "agent" });
-                } else {
-                  setAgentDialogOpen(true);
-                }
-              }
+              applyViewMode(v);
             }}
           />
           <span
@@ -1116,7 +1265,7 @@ export default function App() {
             <label className="toolbar-diff-field">
               <span className="toolbar-diff-field-label">Base</span>
               <Select
-                value={diffBaseRef}
+                value={diffSelectBaseValue}
                 onValueChange={(v) => {
                   if (activeTabId) patchTab(activeTabId, { diffBaseRef: v });
                 }}
@@ -1136,7 +1285,7 @@ export default function App() {
             <label className="toolbar-diff-field">
               <span className="toolbar-diff-field-label">Compare</span>
               <Select
-                value={diffHeadRef}
+                value={diffSelectHeadValue}
                 onValueChange={(v) => {
                   if (activeTabId) patchTab(activeTabId, { diffHeadRef: v });
                 }}
@@ -1281,6 +1430,8 @@ export default function App() {
         )}
       </div>
 
+      </WorkspaceChromeErrorBoundary>
+
       <AgentPurposeDialog
         open={agentDialogOpen}
         onOpenChange={(open) => {
@@ -1299,6 +1450,7 @@ export default function App() {
             ? `${defaultBranchInfo.shortName} (${defaultBranchInfo.startPoint})`
             : defaultStartPoint
         }
+        useCheckoutBranchName={defaultBranchInfo?.shortName ?? "main"}
       />
 
       <PreferencesDialog

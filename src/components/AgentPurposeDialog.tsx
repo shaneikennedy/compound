@@ -16,6 +16,7 @@ export function AgentPurposeDialog({
   busy,
   error,
   defaultBranchLabel,
+  useCheckoutBranchName,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -24,6 +25,8 @@ export function AgentPurposeDialog({
   busy: boolean;
   error: string | null;
   defaultBranchLabel: string;
+  /** Short branch name for "Use …" (e.g. `main`) — stay on this checkout, no worktree. */
+  useCheckoutBranchName: string;
 }) {
   const [purpose, setPurpose] = useState("");
 
@@ -97,7 +100,7 @@ export function AgentPurposeDialog({
                   onUseThisRepository();
                 }}
               >
-                Use this repository
+                Use {useCheckoutBranchName}
               </Button>
               <Button
                 type="submit"
