@@ -17,6 +17,7 @@ import {
   type CodeViewerThemeId,
   type CodeViewerThemePick,
 } from "./repo/codeViewerThemes";
+import { AgentTerminal } from "./components/AgentTerminal";
 import { FocusMapOverlay } from "./components/FocusMapOverlay";
 import { CodeViewer } from "./components/CodeViewer";
 import { DiffViewer } from "./components/DiffViewer";
@@ -31,7 +32,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select";
-import { ViewModeToggle } from "./components/ui/view-mode-toggle";
+import {
+  ViewModeToggle,
+  type ViewModeOption,
+} from "./components/ui/view-mode-toggle";
 import { repoPathToAbsolute } from "./repo/absolutePath";
 import { treePathsForTouchedFiles } from "./repo/diffTreePaths";
 import type { GitStatusEntry } from "@pierre/trees";
@@ -227,7 +231,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [fileLoading, setFileLoading] = useState(false);
   const [filePaletteOpen, setFilePaletteOpen] = useState(false);
-  const [viewMode, setViewMode] = useState<"browse" | "diff">("browse");
+  const [viewMode, setViewMode] = useState<ViewModeOption>("browse");
   const [diffBaseRef, setDiffBaseRef] = useState("origin/main");
   const [diffHeadRef, setDiffHeadRef] = useState("HEAD");
   const [branchList, setBranchList] = useState<GitBranchListPayload | null>(
@@ -306,7 +310,12 @@ export default function App() {
     [diffBaseRef, diffHeadRef, diffEntries],
   );
 
-  const treeScanForPane = viewMode === "browse" ? scan : diffTreeScan;
+  const treeScanForPane =
+    viewMode === "browse"
+      ? scan
+      : viewMode === "diff"
+        ? diffTreeScan
+        : null;
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -605,14 +614,20 @@ export default function App() {
   };
 
   const breadcrumb =
-    viewMode === "diff"
-      ? selectedRel != null
-        ? `${diffBaseRef} … ${diffHeadRef} · ${selectedRel}`
-        : diffListLoading
-          ? "Loading changed files…"
-          : "—"
-      : (selectedRel ??
-        (rootPath && scanning ? "Indexing workspace…" : "—"));
+    viewMode === "agent"
+      ? rootPath
+        ? `Agent · ${
+            rootPath.split(/[/\\]/).filter(Boolean).pop() ?? rootPath
+          }`
+        : "—"
+      : viewMode === "diff"
+        ? selectedRel != null
+          ? `${diffBaseRef} … ${diffHeadRef} · ${selectedRel}`
+          : diffListLoading
+            ? "Loading changed files…"
+            : "—"
+        : (selectedRel ??
+          (rootPath && scanning ? "Indexing workspace…" : "—"));
 
   const indexingWorkspace = Boolean(rootPath && scanning);
   const diffSidebarLoading =
@@ -621,7 +636,8 @@ export default function App() {
     diffListLoading &&
     branchList?.ok !== false;
 
-  const treeBusy = indexingWorkspace || diffSidebarLoading;
+  const treeBusy =
+    viewMode !== "agent" && (indexingWorkspace || diffSidebarLoading);
 
   return (
     <div ref={shellRef} className="app-shell">
@@ -699,8 +715,10 @@ export default function App() {
                   setSelectedRel(scan.readmePath);
                   void loadFileRel(scan.readmePath);
                 }
-              } else {
+              } else if (v === "diff") {
                 setViewMode("diff");
+              } else {
+                setViewMode("agent");
               }
             }}
           />
@@ -712,51 +730,55 @@ export default function App() {
           </span>
           <span className="toolbar-rule" aria-hidden />
           <div className="toolbar-cluster toolbar-cluster--end">
-            <Select
-              value={codeThemePick}
-              onValueChange={(v) => {
-                setCodeThemePick(
-                  v === "auto" || isKnownCodeViewerTheme(v) ? v : "auto",
-                );
-              }}
-            >
-              <SelectTrigger
-                id="code-theme-select"
-                className="h-7 max-w-[min(160px,28vw)] text-xs"
-                aria-label="Syntax highlighting theme"
-                title="Syntax highlighting (Shiki)"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto">Auto theme</SelectItem>
-                {CODE_VIEWER_THEME_OPTIONS.map((id) => (
-                  <SelectItem key={id} value={id}>
-                    {codeViewerThemeLabel(id)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              title="Search files — ⌘K or Ctrl+K"
-              aria-label="Search files"
-              onClick={() => setFilePaletteOpen((o) => !o)}
-            >
-              Find
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              aria-expanded={sidebarOpen}
-              aria-label={sidebarOpen ? "Hide file tree" : "Show file tree"}
-              onClick={() => setSidebarOpen((o) => !o)}
-            >
-              {sidebarOpen ? "Hide tree" : "Tree"}
-            </Button>
+            {viewMode !== "agent" ? (
+              <>
+                <Select
+                  value={codeThemePick}
+                  onValueChange={(v) => {
+                    setCodeThemePick(
+                      v === "auto" || isKnownCodeViewerTheme(v) ? v : "auto",
+                    );
+                  }}
+                >
+                  <SelectTrigger
+                    id="code-theme-select"
+                    className="h-7 max-w-[min(160px,28vw)] text-xs"
+                    aria-label="Syntax highlighting theme"
+                    title="Syntax highlighting (Shiki)"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Auto theme</SelectItem>
+                    {CODE_VIEWER_THEME_OPTIONS.map((id) => (
+                      <SelectItem key={id} value={id}>
+                        {codeViewerThemeLabel(id)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  title="Search files — ⌘K or Ctrl+K"
+                  aria-label="Search files"
+                  onClick={() => setFilePaletteOpen((o) => !o)}
+                >
+                  Find
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-expanded={sidebarOpen}
+                  aria-label={sidebarOpen ? "Hide file tree" : "Show file tree"}
+                  onClick={() => setSidebarOpen((o) => !o)}
+                >
+                  {sidebarOpen ? "Hide tree" : "Tree"}
+                </Button>
+              </>
+            ) : null}
           </div>
         </div>
         {viewMode === "diff" && rootPath ? (
@@ -841,7 +863,7 @@ export default function App() {
           {cloneError}
         </div>
       ) : null}
-      {fileError && viewMode === "browse" ? (
+      {fileError && (viewMode === "browse" || viewMode === "agent") ? (
         <div className="error-banner" role="alert">
           {fileError}
         </div>
@@ -853,108 +875,125 @@ export default function App() {
       ) : null}
 
       <div
-        className="app-body"
+        className={`app-body${viewMode === "agent" ? " app-body--agent" : ""}`}
         aria-busy={treeBusy || undefined}
       >
-        <aside className={`tree-panel${sidebarOpen ? "" : " collapsed"}`}>
-          <div
-            className="tree-panel-inner"
-            data-focus-landmark=""
-            data-focus-map-label="File tree"
-            tabIndex={-1}
-          >
-            {treeBusy ? (
-              <WorkspaceIndexingPanel context="tree" />
-            ) : viewMode === "diff" && diffListError ? (
-              <div className="pane-placeholder pane-error">{diffListError}</div>
-            ) : viewMode === "diff" && diffEntries.length === 0 ? (
-              <div className="pane-placeholder">
-                No changed files between these refs.
-              </div>
-            ) : treeScanForPane && treeScanForPane.paths.length > 0 ? (
-              <RepoTreePane
-                scan={treeScanForPane}
-                workspaceKey={rootPath ?? ""}
-                treeChromeTheme={treeChromeTheme}
-                onSelectFileRel={onSelectFileRel}
-                diffMode={
-                  viewMode === "diff"
-                    ? {
-                        paths: diffTreeScan?.paths ?? [],
-                        gitStatus: diffGitStatusEntries,
-                        preferredSelectedRel: selectedRel,
-                        instanceKey: diffTreeInstanceKey,
-                      }
-                    : null
-                }
-              />
-            ) : (
-              <div className="pane-placeholder">
-                <p>No browsable files in this folder.</p>
-              </div>
-            )}
-          </div>
-        </aside>
-        <section
-          className="viewer-panel"
-          data-focus-landmark=""
-          data-focus-map-label="File viewer"
-          tabIndex={-1}
-        >
-          <header>
-            {viewMode === "diff"
-              ? diffSidebarLoading
-                ? "Loading diff…"
-                : selectedRel
-                  ? (selectedRel.split("/").pop() ?? selectedRel)
-                  : "Pick a changed file"
-              : indexingWorkspace
-                ? "Indexing workspace…"
-                : selectedRel
-                  ? (selectedRel.split("/").pop() ?? selectedRel)
-                  : scan?.readmePath
-                    ? "Select a file"
-                    : "No README in root — pick a file"}
-          </header>
-          {treeBusy ? (
-            <WorkspaceIndexingPanel context="viewer" />
-          ) : viewMode === "diff" ? (
-            !selectedRel ? (
-              <div className="pane-placeholder">
-                {diffEntries.length === 0
-                  ? "No changes to show."
-                  : "Choose a file from the tree."}
-              </div>
-            ) : diffPatchLoading ? (
-              <div className="pane-placeholder">Loading patch…</div>
-            ) : (
-              <DiffViewer
-                relativePath={selectedRel}
-                patchText={diffPatchText ?? ""}
-                theme={resolvedCodeViewerTheme}
-                diffStyle={diffStyle}
-              />
-            )
-          ) : indexingWorkspace ? (
-            <WorkspaceIndexingPanel context="viewer" />
-          ) : selectedRel && fileLoading ? (
-            <div className="pane-placeholder">Loading file…</div>
-          ) : selectedRel && fileContents !== null ? (
-            <CodeViewer
-              relativePath={selectedRel}
-              contents={fileContents}
-              theme={resolvedCodeViewerTheme}
+        {viewMode === "agent" && rootPath ? (
+          <section className="agent-panel" tabIndex={-1}>
+            <header>
+              Shell session in the repo root — switch mode to end the session.
+            </header>
+            <AgentTerminal
+              rootPath={rootPath}
+              lightChrome={prefersLightChrome}
             />
-          ) : (
-            <div className="pane-placeholder">
-              {!rootPath
-                ? "Open a local folder or clone a GitHub repo to begin."
-                : !selectedRel && !fileError
-                  ? "Choose a file from the tree."
-                  : null}
-            </div>
-          )}
-        </section>
+          </section>
+        ) : (
+          <>
+            <aside className={`tree-panel${sidebarOpen ? "" : " collapsed"}`}>
+              <div
+                className="tree-panel-inner"
+                data-focus-landmark=""
+                data-focus-map-label="File tree"
+                tabIndex={-1}
+              >
+                {treeBusy ? (
+                  <WorkspaceIndexingPanel context="tree" />
+                ) : viewMode === "diff" && diffListError ? (
+                  <div className="pane-placeholder pane-error">
+                    {diffListError}
+                  </div>
+                ) : viewMode === "diff" && diffEntries.length === 0 ? (
+                  <div className="pane-placeholder">
+                    No changed files between these refs.
+                  </div>
+                ) : treeScanForPane &&
+                  treeScanForPane.paths.length > 0 ? (
+                  <RepoTreePane
+                    scan={treeScanForPane}
+                    workspaceKey={rootPath ?? ""}
+                    treeChromeTheme={treeChromeTheme}
+                    onSelectFileRel={onSelectFileRel}
+                    diffMode={
+                      viewMode === "diff"
+                        ? {
+                            paths: diffTreeScan?.paths ?? [],
+                            gitStatus: diffGitStatusEntries,
+                            preferredSelectedRel: selectedRel,
+                            instanceKey: diffTreeInstanceKey,
+                          }
+                        : null
+                    }
+                  />
+                ) : (
+                  <div className="pane-placeholder">
+                    <p>No browsable files in this folder.</p>
+                  </div>
+                )}
+              </div>
+            </aside>
+            <section
+              className="viewer-panel"
+              data-focus-landmark=""
+              data-focus-map-label="File viewer"
+              tabIndex={-1}
+            >
+              <header>
+                {viewMode === "diff"
+                  ? diffSidebarLoading
+                    ? "Loading diff…"
+                    : selectedRel
+                      ? (selectedRel.split("/").pop() ?? selectedRel)
+                      : "Pick a changed file"
+                  : indexingWorkspace
+                    ? "Indexing workspace…"
+                    : selectedRel
+                      ? (selectedRel.split("/").pop() ?? selectedRel)
+                      : scan?.readmePath
+                        ? "Select a file"
+                        : "No README in root — pick a file"}
+              </header>
+              {treeBusy ? (
+                <WorkspaceIndexingPanel context="viewer" />
+              ) : viewMode === "diff" ? (
+                !selectedRel ? (
+                  <div className="pane-placeholder">
+                    {diffEntries.length === 0
+                      ? "No changes to show."
+                      : "Choose a file from the tree."}
+                  </div>
+                ) : diffPatchLoading ? (
+                  <div className="pane-placeholder">Loading patch…</div>
+                ) : (
+                  <DiffViewer
+                    relativePath={selectedRel}
+                    patchText={diffPatchText ?? ""}
+                    theme={resolvedCodeViewerTheme}
+                    diffStyle={diffStyle}
+                  />
+                )
+              ) : indexingWorkspace ? (
+                <WorkspaceIndexingPanel context="viewer" />
+              ) : selectedRel && fileLoading ? (
+                <div className="pane-placeholder">Loading file…</div>
+              ) : selectedRel && fileContents !== null ? (
+                <CodeViewer
+                  relativePath={selectedRel}
+                  contents={fileContents}
+                  theme={resolvedCodeViewerTheme}
+                />
+              ) : (
+                <div className="pane-placeholder">
+                  {!rootPath
+                    ? "Open a local folder or clone a GitHub repo to begin."
+                    : !selectedRel && !fileError
+                      ? "Choose a file from the tree."
+                      : null}
+                </div>
+              )}
+            </section>
+          </>
+        )}
       </div>
 
       <FocusMapOverlay
@@ -972,6 +1011,12 @@ export default function App() {
         }
         onPick={(path) => {
           palettePickFocusViewerPathRef.current = path;
+          if (viewMode === "agent") {
+            setViewMode("browse");
+            setSelectedRel(path);
+            void loadFileRel(path);
+            return;
+          }
           onSelectFileRel(path);
         }}
       />

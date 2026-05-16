@@ -1,3 +1,5 @@
+mod terminal;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -323,11 +325,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .manage(terminal::PtySession::default())
         .invoke_handler(tauri::generate_handler![
             git_clone_repo,
             git_branch_list,
             git_branch_diff_files,
-            git_branch_diff_patch
+            git_branch_diff_patch,
+            terminal::terminal_spawn,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_kill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
