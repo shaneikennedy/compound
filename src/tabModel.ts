@@ -10,6 +10,13 @@ export type AgentWorktreeInfo = {
   path: string;
   branch: string;
   purpose: string;
+  /**
+   * `git worktree add … && cd …` (or PowerShell variant) pasted once into the Agent PTY.
+   * Cleared after injection so rerenders do not replay the bootstrap or change the compose key.
+   */
+  bootstrapShellCommand: string | null;
+  /** Picked from “Resume existing worktree”; shell starts in `path` (no bootstrap `cd`). */
+  resumedFromWorktreePicker?: boolean;
 };
 
 /** Per-tab agent context: unset until user picks main repo or creates a worktree. */
@@ -25,7 +32,20 @@ export function agentSessionConfigured(s: AgentSession): boolean {
 export function agentShellRoot(projectRoot: string, s: AgentSession): string | null {
   if (s.kind === "unset") return null;
   if (s.kind === "main_repository") return projectRoot;
-  return s.info.path;
+  const pendingBootstrap = s.info.bootstrapShellCommand?.trim();
+  if (pendingBootstrap) return projectRoot;
+  if (s.info.resumedFromWorktreePicker) return s.info.path;
+  return projectRoot;
+}
+
+/** Browse / workspace scan root while Agent + worktree tab is pending `git worktree add` vs after the worktree exists. */
+export function agentWorktreeBrowseRoot(
+  projectRoot: string,
+  info: AgentWorktreeInfo,
+): string {
+  const raw = info.bootstrapShellCommand;
+  const pending = raw != null && raw.trim().length > 0;
+  return pending ? projectRoot : info.path;
 }
 
 export type WorkspaceTabState = {

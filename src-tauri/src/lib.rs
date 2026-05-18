@@ -42,7 +42,7 @@ fn git_clone_repo(url: String) -> Result<String, String> {
         .map_err(|e| e.to_string())?
         .as_nanos();
     let dest = parent.join(format!("repo-{id}"));
-    let output = Command::new("git")
+    let output = git_command_spawn(None)
         .args(["clone", "--depth", "1"])
         .arg(&clone_url)
         .arg(&dest)
@@ -60,21 +60,75 @@ fn git_clone_repo(url: String) -> Result<String, String> {
         .ok_or_else(|| "Clone path contained invalid Unicode.".into())
 }
 
+fn git_command_spawn(repo_root: Option<&Path>) -> Command {
+    let mut cmd = Command::new("git");
+    if let Some(root) = repo_root {
+        cmd.current_dir(root);
+    }
+    // Clear repo-scoping env inherited from shells / direnv hooks so `current_dir` always wins,
+    // including for linked git worktrees (`.git` is a pointer file).
+    cmd.env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat")
+        .arg("--no-optional-locks")
+        .arg("-c")
+        .arg("core.pager=cat")
+        .arg("-c")
+        .arg("safe.directory=*");
+    cmd
+}
+
+fn git_error_message(operation: &str, output: &std::process::Output) -> String {
+    let code = output.status.code();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let mut msg = format!("Git {operation}");
+    match code {
+        Some(c) => msg.push_str(&format!(" failed (exit {c})")),
+        None => msg.push_str(" failed"),
+    }
+    if !stderr.is_empty() {
+        msg.push_str(":\n");
+        msg.push_str(&stderr);
+    } else if !stdout.is_empty() {
+        msg.push_str(":\n");
+        msg.push_str(&stdout);
+    } else {
+        msg.push('.');
+        msg.push_str(" Git produced no stderr or stdout.");
+    }
+    msg
+}
+
+/// `git diff` exits with status **1** when there are differences and **0** when trees match.
+/// Higher exit codes or signal exits indicate failure (see `git help diff`, EXIT STATUS).
+fn git_diff_ok(status: std::process::ExitStatus) -> bool {
+    status.success() || status.code() == Some(1)
+}
+
 fn run_git_stdout(repo_root: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .current_dir(repo_root)
+    let output = git_command_spawn(Some(Path::new(repo_root)))
         .args(args)
         .output()
         .map_err(|e| format!("Could not run git: {e}. Is git installed and on PATH?"))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
-        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if err.is_empty() {
-            Err("git command failed.".into())
-        } else {
-            Err(err)
-        }
+        Err(git_error_message("command", &output))
+    }
+}
+
+fn run_git_diff_stdout(repo_root: &str, args: &[&str]) -> Result<String, String> {
+    let output = git_command_spawn(Some(Path::new(repo_root)))
+        .args(args)
+        .output()
+        .map_err(|e| format!("Could not run git: {e}. Is git installed and on PATH?"))?;
+    if git_diff_ok(output.status) {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(git_error_message("diff", &output))
     }
 }
 
@@ -136,6 +190,18 @@ pub struct DefaultBranchInfo {
 pub struct WorktreeCreateResult {
     pub path: String,
     pub branch: String,
+    /// Shell command injected into the in-app Agent PTY (`git worktree add …`; POSIX uses `bash`/`sh` syntax, Windows targets PowerShell).
+    pub bootstrap_shell_command: String,
+}
+
+fn shell_single_quote_escape(s: &str) -> String {
+    // Safe for POSIX-ish shells: wrap in single quotes; `'` becomes `'"'"'`.
+    format!("'{}'", s.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(windows)]
+fn pwsh_single_quoted_literal(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
 }
 
 fn slugify_branch_segment(s: &str) -> String {
@@ -210,7 +276,8 @@ fn git_resolve_default_branch(root_path: String) -> Result<DefaultBranchInfo, St
     })
 }
 
-/// Create a new branch + linked worktree from `base_start_point` under `.compound-worktrees/<repo>/…`.
+/// Plan a linked worktree under `.compound-worktrees/<repo>/…` (creates parents only).
+/// Actual `git worktree add` runs in the Agent PTY so Git LFS and shell env match the user's setup.
 #[tauri::command]
 fn git_create_agent_worktree(
     root_path: String,
@@ -251,37 +318,45 @@ fn git_create_agent_worktree(
         .map_err(|e| e.to_string())?
         .as_millis();
     let dir_name = format!("{slug}-{id}");
-    let wt_path = worktrees_root.join(dir_name);
-
     let branch_slug = slugify_branch_segment(&format!("{slug}-{}", id % 100_000));
     let branch_name = format!("compound/{branch_slug}");
 
-    let output = Command::new("git")
-        .current_dir(root)
-        .arg("worktree")
-        .arg("add")
-        .arg("-b")
-        .arg(&branch_name)
-        .arg(&wt_path)
-        .arg(base)
-        .output()
-        .map_err(|e| format!("git worktree: {e}"))?;
-
-    if !output.status.success() {
-        let _ = std::fs::remove_dir_all(&wt_path);
-        return Err(format!(
-            "git worktree add failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    wt_path
+    // `git worktree add` runs in the in-app Agent terminal instead of here so Git LFS
+    // and direnv-augmented PATH match the user's interactive shell.
+    let worktrees_canon = worktrees_root.canonicalize().map_err(|e| e.to_string())?;
+    let wt_abs_path = worktrees_canon.join(&dir_name);
+    let wt_abs_str = wt_abs_path
         .to_str()
-        .map(|path| WorktreeCreateResult {
-            path: path.to_owned(),
-            branch: branch_name,
-        })
-        .ok_or_else(|| "Worktree path was not valid Unicode.".into())
+        .ok_or_else(|| "Canonical worktree path was not valid Unicode.".to_string())?;
+
+    let bootstrap_shell_command = {
+        #[cfg(not(windows))]
+        {
+            format!(
+                "git worktree add -b {} {} {} && cd {}",
+                shell_single_quote_escape(&branch_name),
+                shell_single_quote_escape(wt_abs_str),
+                shell_single_quote_escape(base),
+                shell_single_quote_escape(wt_abs_str),
+            )
+        }
+        #[cfg(windows)]
+        {
+            format!(
+                "git worktree add -b {} {} {}; Set-Location -LiteralPath {}",
+                pwsh_single_quoted_literal(&branch_name),
+                pwsh_single_quoted_literal(wt_abs_str),
+                pwsh_single_quoted_literal(base),
+                pwsh_single_quoted_literal(wt_abs_str),
+            )
+        }
+    };
+
+    Ok(WorktreeCreateResult {
+        path: wt_abs_str.to_owned(),
+        branch: branch_name,
+        bootstrap_shell_command,
+    })
 }
 
 // —— Branch comparison (browse vs diff) ——
@@ -436,7 +511,7 @@ fn git_worktree_diff_files(root_path: String) -> Result<Vec<BranchDiffFileEntry>
     let has_head = run_git_stdout(root, &["rev-parse", "--verify", "HEAD"]).is_ok();
 
     if has_head {
-        let text = run_git_stdout(
+        let text = run_git_diff_stdout(
             root,
             &[
                 "-c",
@@ -450,7 +525,7 @@ fn git_worktree_diff_files(root_path: String) -> Result<Vec<BranchDiffFileEntry>
         )?;
         parse_diff_name_status_into_map(&mut map, &text);
     } else {
-        let cached = run_git_stdout(
+        let cached = run_git_diff_stdout(
             root,
             &[
                 "-c",
@@ -461,7 +536,7 @@ fn git_worktree_diff_files(root_path: String) -> Result<Vec<BranchDiffFileEntry>
             ],
         )?;
         parse_diff_name_status_into_map(&mut map, &cached);
-        let unstaged = run_git_stdout(
+        let unstaged = run_git_diff_stdout(
             root,
             &["-c", "core.quotepath=false", "diff", "--name-status"],
         )?;
@@ -515,7 +590,7 @@ fn git_worktree_diff_patch(root_path: String, path: String) -> Result<String, St
     let has_head = run_git_stdout(root, &["rev-parse", "--verify", "HEAD"]).is_ok();
 
     if has_head {
-        let patch = run_git_stdout(
+        let patch = run_git_diff_stdout(
             root,
             &[
                 "-c",
@@ -535,7 +610,7 @@ fn git_worktree_diff_patch(root_path: String, path: String) -> Result<String, St
         }
     } else {
         let mut combined = String::new();
-        if let Ok(a) = run_git_stdout(
+        if let Ok(a) = run_git_diff_stdout(
             root,
             &[
                 "-c",
@@ -550,7 +625,7 @@ fn git_worktree_diff_patch(root_path: String, path: String) -> Result<String, St
         ) {
             combined.push_str(&a);
         }
-        if let Ok(b) = run_git_stdout(
+        if let Ok(b) = run_git_diff_stdout(
             root,
             &[
                 "-c",
@@ -574,7 +649,7 @@ fn git_worktree_diff_patch(root_path: String, path: String) -> Result<String, St
         return Err("No local patch available for this path.".into());
     }
 
-    run_git_stdout(
+    run_git_diff_stdout(
         root,
         &[
             "-c",
@@ -591,6 +666,100 @@ fn git_worktree_diff_patch(root_path: String, path: String) -> Result<String, St
     )
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitListedWorktree {
+    pub path: String,
+    pub branch_short: Option<String>,
+    pub detached: bool,
+    pub is_current_workspace: bool,
+}
+
+fn parse_git_worktree_porcelain(output: &str) -> Vec<(String, Option<String>, bool)> {
+    #[derive(Default)]
+    struct Rec {
+        path: Option<String>,
+        branch: Option<String>,
+        detached: bool,
+    }
+    let mut records: Vec<Rec> = Vec::new();
+
+    let mut cur = Rec::default();
+    for raw in output.lines() {
+        let line = raw.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(p) = line.strip_prefix("worktree ") {
+            if cur.path.is_some() {
+                records.push(cur);
+                cur = Rec::default();
+            }
+            cur.path = Some(p.trim().to_string());
+            continue;
+        }
+        if cur.path.is_none() {
+            continue;
+        }
+        if let Some(b) = line.strip_prefix("branch ") {
+            cur.branch = Some(b.trim().to_string());
+            continue;
+        }
+        if line == "detached" {
+            cur.detached = true;
+        }
+    }
+    if cur.path.is_some() {
+        records.push(cur);
+    }
+
+    records
+        .into_iter()
+        .filter_map(|r| {
+            let path = r.path?;
+            let branch_short = if r.detached {
+                None
+            } else {
+                r.branch.map(|b| {
+                    b.strip_prefix("refs/heads/")
+                        .unwrap_or(&b)
+                        .to_string()
+                })
+                .filter(|s| !s.is_empty())
+            };
+            let detached = r.detached || branch_short.is_none();
+            Some((path, branch_short, detached))
+        })
+        .collect()
+}
+
+/// Linked worktrees (`git worktree list --porcelain`).
+#[tauri::command]
+fn git_list_worktrees(root_path: String) -> Result<Vec<GitListedWorktree>, String> {
+    let root = validate_workspace_dir(&root_path)?;
+    ensure_git_worktree(root)?;
+
+    let porcelain = run_git_stdout(root, &["worktree", "list", "--porcelain"])?;
+    let root_canon = Path::new(root).canonicalize().ok();
+
+    Ok(parse_git_worktree_porcelain(&porcelain)
+        .into_iter()
+        .map(|(path, branch_short, detached)| {
+            let wt_canon = Path::new(&path).canonicalize().ok();
+            let is_current_workspace = match (&root_canon, &wt_canon) {
+                (Some(a), Some(b)) => a == b,
+                _ => path == root,
+            };
+            GitListedWorktree {
+                path,
+                branch_short,
+                detached,
+                is_current_workspace,
+            }
+        })
+        .collect())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -605,6 +774,7 @@ pub fn run() {
             git_branch_list,
             git_worktree_diff_files,
             git_worktree_diff_patch,
+            git_list_worktrees,
             terminal::terminal_spawn,
             terminal::terminal_write,
             terminal::terminal_resize,

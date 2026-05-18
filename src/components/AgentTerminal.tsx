@@ -6,7 +6,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
 
-type TerminalDataPayload = { data: number[] };
+type TerminalDataPayload = { sessionId: string; data: number[] };
+
+type TerminalExitPayload = { sessionId: string };
 
 function focusTerminalAfterShellUiSettles(
   isAlive: () => boolean,
@@ -37,22 +39,33 @@ function shellInputNewline(): string {
 }
 
 export function AgentTerminal({
+  sessionId,
   rootPath,
   lightChrome,
   visible,
   startupShellLine,
+  onStartupShellLineConsumed,
 }: {
+  /** Stable workspace tab id — maps to one native PTY session. */
+  sessionId: string;
   rootPath: string;
   lightChrome: boolean;
   visible: boolean;
-  /** If set after the PTY opens, forwarded to the shell as one executed line (default-agent preference). */
+  /** Latest line forwarded to the shell once per PTY (read from a ref at spawn time — changes do not recreate the PTY). */
   startupShellLine?: string | null;
+  /** Called once after injected input is typed into a new PTY (worktree bootstrap, default agent CLI, etc.). */
+  onStartupShellLineConsumed?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  /** Avoid stale closure without making `startupShellLine` recreate the PTY on every keystroke upstream. */
+  const startupShellLineRef = useRef(startupShellLine);
+  startupShellLineRef.current = startupShellLine;
+  const onConsumedRef = useRef(onStartupShellLineConsumed);
+  onConsumedRef.current = onStartupShellLineConsumed;
 
   useEffect(() => {
     const el = hostRef.current;
@@ -101,17 +114,19 @@ export function AgentTerminal({
     ro.observe(el);
 
     const disposeResize = term.onResize(({ cols, rows }) => {
-      void invoke("terminal_resize", { cols, rows }).catch(() => {});
+      void invoke("terminal_resize", { sessionId, cols, rows }).catch(() => {});
     });
 
     const disposeData = term.onData((data) => {
       void invoke("terminal_write", {
+        sessionId,
         data: Array.from(new TextEncoder().encode(data)),
       }).catch(() => {});
     });
 
     void (async () => {
       const uData = await listen<TerminalDataPayload>("terminal:data", (e) => {
+        if (e.payload.sessionId !== sessionId) return;
         term.write(new Uint8Array(e.payload.data));
       });
       if (dead) {
@@ -120,9 +135,13 @@ export function AgentTerminal({
       }
       unlisten.push(uData);
 
-      const uExit = await listen("terminal:exit", () => {
-        term.writeln("\r\n\x1b[90m[shell exited]\x1b[0m");
-      });
+      const uExit = await listen<TerminalExitPayload>(
+        "terminal:exit",
+        (e) => {
+          if (e.payload.sessionId !== sessionId) return;
+          term.writeln("\r\n\x1b[90m[shell exited]\x1b[0m");
+        },
+      );
       if (dead) {
         uExit();
         return;
@@ -131,6 +150,7 @@ export function AgentTerminal({
 
       try {
         await invoke("terminal_spawn", {
+          sessionId,
           cwd: rootPath,
           cols: term.cols,
           rows: term.rows,
@@ -140,7 +160,7 @@ export function AgentTerminal({
           term,
         );
 
-        const line = startupShellLine?.trim();
+        const line = startupShellLineRef.current?.trim();
         if (line) {
           await new Promise<void>((resolve) =>
             window.setTimeout(resolve, 80),
@@ -150,8 +170,10 @@ export function AgentTerminal({
               `${line}${shellInputNewline()}`,
             );
             await invoke("terminal_write", {
+              sessionId,
               data: Array.from(payload),
             }).catch(() => {});
+            onConsumedRef.current?.();
           }
         }
       } catch (err) {
@@ -164,7 +186,7 @@ export function AgentTerminal({
       }
 
       if (dead) {
-        void invoke("terminal_kill").catch(() => {});
+        void invoke("terminal_kill", { sessionId }).catch(() => {});
       }
     })();
 
@@ -177,10 +199,10 @@ export function AgentTerminal({
       disposeResize.dispose();
       disposeData.dispose();
       for (const u of unlisten) u();
-      void invoke("terminal_kill").catch(() => {});
+      void invoke("terminal_kill", { sessionId }).catch(() => {});
       term.dispose();
     };
-  }, [rootPath, lightChrome, startupShellLine]);
+  }, [sessionId, rootPath, lightChrome]);
 
   useEffect(() => {
     if (!visible) return;

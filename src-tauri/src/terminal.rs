@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Mutex;
@@ -13,7 +14,14 @@ const TERM_EXIT_EVENT: &str = "terminal:exit";
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalDataPayload {
+    pub session_id: String,
     pub data: Vec<u8>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalExitPayload {
+    pub session_id: String,
 }
 
 fn validate_workspace_dir(root_path: &str) -> Result<&str, String> {
@@ -47,13 +55,13 @@ fn build_shell_command(cwd: &Path) -> CommandBuilder {
 }
 
 pub struct PtySession {
-    inner: Mutex<Option<PtyInner>>,
+    inner: Mutex<HashMap<String, PtyInner>>,
 }
 
 impl Default for PtySession {
     fn default() -> Self {
         Self {
-            inner: Mutex::new(None),
+            inner: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -64,11 +72,11 @@ struct PtyInner {
     child: Box<dyn Child + Send>,
 }
 
-fn kill_session(slot: &Mutex<Option<PtyInner>>) {
+fn kill_one(slot: &Mutex<HashMap<String, PtyInner>>, id: &str) {
     let Ok(mut guard) = slot.lock() else {
         return;
     };
-    if let Some(mut inner) = guard.take() {
+    if let Some(mut inner) = guard.remove(id) {
         let _ = inner.child.kill();
     }
 }
@@ -77,14 +85,20 @@ fn kill_session(slot: &Mutex<Option<PtyInner>>) {
 pub fn terminal_spawn(
     app: AppHandle,
     session: State<PtySession>,
+    session_id: String,
     cwd: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
+    let sid = session_id.trim();
+    if sid.is_empty() {
+        return Err("Terminal session id is empty.".into());
+    }
+
     let root = validate_workspace_dir(&cwd)?;
     let path = Path::new(root);
 
-    kill_session(&session.inner);
+    kill_one(&session.inner, sid);
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -116,14 +130,18 @@ pub fn terminal_spawn(
             .inner
             .lock()
             .map_err(|_| "terminal session lock poisoned".to_string())?;
-        *guard = Some(PtyInner {
-            master,
-            writer,
-            child,
-        });
+        guard.insert(
+            sid.to_string(),
+            PtyInner {
+                master,
+                writer,
+                child,
+            },
+        );
     }
 
     let app_handle = app.clone();
+    let sid_owned = sid.to_string();
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
         loop {
@@ -132,7 +150,13 @@ pub fn terminal_spawn(
                 Ok(n) => {
                     let data = buf[..n].to_vec();
                     if app_handle
-                        .emit(TERM_DATA_EVENT, TerminalDataPayload { data })
+                        .emit(
+                            TERM_DATA_EVENT,
+                            TerminalDataPayload {
+                                session_id: sid_owned.clone(),
+                                data,
+                            },
+                        )
                         .is_err()
                     {
                         break;
@@ -141,19 +165,32 @@ pub fn terminal_spawn(
                 Err(_) => break,
             }
         }
-        let _ = app_handle.emit(TERM_EXIT_EVENT, ());
+        let _ = app_handle.emit(
+            TERM_EXIT_EVENT,
+            TerminalExitPayload {
+                session_id: sid_owned,
+            },
+        );
     });
 
     Ok(())
 }
 
 #[tauri::command]
-pub fn terminal_write(session: State<PtySession>, data: Vec<u8>) -> Result<(), String> {
+pub fn terminal_write(
+    session: State<PtySession>,
+    session_id: String,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    let sid = session_id.trim();
+    if sid.is_empty() {
+        return Ok(());
+    }
     let mut guard = session
         .inner
         .lock()
         .map_err(|_| "terminal session lock poisoned".to_string())?;
-    let Some(inner) = guard.as_mut() else {
+    let Some(inner) = guard.get_mut(sid) else {
         return Ok(());
     };
     inner
@@ -165,12 +202,21 @@ pub fn terminal_write(session: State<PtySession>, data: Vec<u8>) -> Result<(), S
 }
 
 #[tauri::command]
-pub fn terminal_resize(session: State<PtySession>, cols: u16, rows: u16) -> Result<(), String> {
+pub fn terminal_resize(
+    session: State<PtySession>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let sid = session_id.trim();
+    if sid.is_empty() {
+        return Ok(());
+    }
     let guard = session
         .inner
         .lock()
         .map_err(|_| "terminal session lock poisoned".to_string())?;
-    let Some(inner) = guard.as_ref() else {
+    let Some(inner) = guard.get(sid) else {
         return Ok(());
     };
     inner
@@ -185,7 +231,10 @@ pub fn terminal_resize(session: State<PtySession>, cols: u16, rows: u16) -> Resu
 }
 
 #[tauri::command]
-pub fn terminal_kill(session: State<PtySession>) -> Result<(), String> {
-    kill_session(&session.inner);
+pub fn terminal_kill(session: State<PtySession>, session_id: String) -> Result<(), String> {
+    let sid = session_id.trim();
+    if !sid.is_empty() {
+        kill_one(&session.inner, sid);
+    }
     Ok(())
 }

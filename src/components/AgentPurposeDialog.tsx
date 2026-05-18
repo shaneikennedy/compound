@@ -13,6 +13,7 @@ export function AgentPurposeDialog({
   onOpenChange,
   onConfirm,
   onUseThisRepository,
+  onResumeExistingWorktree,
   busy,
   error,
   defaultBranchLabel,
@@ -22,6 +23,7 @@ export function AgentPurposeDialog({
   onOpenChange: (open: boolean) => void;
   onConfirm: (purpose: string) => void;
   onUseThisRepository: () => void;
+  onResumeExistingWorktree: () => void;
   busy: boolean;
   error: string | null;
   defaultBranchLabel: string;
@@ -54,6 +56,16 @@ export function AgentPurposeDialog({
           , or use the terminal in this folder (your current branch, no new
           worktree).
         </DialogDescription>
+        <div className="mt-4">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onResumeExistingWorktree()}
+            className="text-sm font-medium text-blue-600 underline-offset-2 hover:underline disabled:opacity-50 dark:text-blue-400"
+          >
+            Resume existing worktree…
+          </button>
+        </div>
         <form
           className="mt-4 flex flex-col gap-3"
           onSubmit={(e) => {
@@ -108,7 +120,7 @@ export function AgentPurposeDialog({
                 size="sm"
                 disabled={busy || !purpose.trim()}
               >
-                {busy ? "Creating worktree…" : "Create worktree"}
+                {busy ? "Preparing…" : "Create worktree"}
               </Button>
             </div>
           </div>

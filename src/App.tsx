@@ -23,6 +23,8 @@ import {
   type CodeViewerThemePick,
 } from "./repo/codeViewerThemes";
 import { AgentPurposeDialog } from "./components/AgentPurposeDialog";
+import type { ListedWorktreeRow } from "./components/AgentResumeWorktreeDialog";
+import { AgentResumeWorktreeDialog } from "./components/AgentResumeWorktreeDialog";
 import { PreferencesDialog } from "./components/PreferencesDialog";
 import { AgentTerminal } from "./components/AgentTerminal";
 import { FocusMapOverlay } from "./components/FocusMapOverlay";
@@ -51,10 +53,12 @@ import {
   type ScanWorkspaceResult,
 } from "./repo/scanWorkspace";
 import {
+  type AgentSession,
   type BranchDiffFileEntry,
   type ViewModeOption,
   agentSessionConfigured,
   agentShellRoot,
+  agentWorktreeBrowseRoot,
   createWorkspaceTab,
   type WorkspaceTabState,
   workspaceTabDisplayName,
@@ -216,6 +220,22 @@ function preferencesShortcutIgnoreTypingTarget(el: EventTarget | null): boolean 
   return isSpaceTypingTarget(el);
 }
 
+function composeAgentStartupShellLine(
+  agentSession: AgentSession,
+  defaultAgentCli: DefaultAgentCliId,
+): string | null {
+  const cliPart = defaultAgentStartupCommand(defaultAgentCli)?.trim();
+
+  if (agentSession.kind === "worktree") {
+    const b = agentSession.info.bootstrapShellCommand?.trim();
+    if (b && cliPart) return `${b} && ${cliPart}`;
+    if (b) return b;
+    return cliPart ?? null;
+  }
+
+  return cliPart ?? null;
+}
+
 function useSuppressSpacePagingInTreeAndViewer() {
   useEffect(() => {
     const onKeyDownCapture = (e: KeyboardEvent) => {
@@ -277,6 +297,13 @@ export default function App() {
   const [agentDialogBusy, setAgentDialogBusy] = useState(false);
   const [agentDialogError, setAgentDialogError] = useState<string | null>(null);
 
+  const [agentResumeDialogOpen, setAgentResumeDialogOpen] = useState(false);
+  const [agentResumeLoading, setAgentResumeLoading] = useState(false);
+  const [agentResumeError, setAgentResumeError] = useState<string | null>(null);
+  const [agentResumeRows, setAgentResumeRows] = useState<ListedWorktreeRow[]>(
+    [],
+  );
+
   const [codeThemePick, setCodeThemePick] = useState<CodeViewerThemePick>(() => {
     try {
       return parseCodeThemePick(
@@ -302,6 +329,9 @@ export default function App() {
   const activeTabIdRef = useRef<string | null>(null);
   activeTabIdRef.current = activeTabId;
 
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+
   const readmeOpenedKeyRef = useRef<string>("");
   const shellRef = useRef<HTMLDivElement | null>(null);
   const palettePickFocusViewerPathRef = useRef<string | null>(null);
@@ -316,13 +346,44 @@ export default function App() {
     setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }, []);
 
+  const clearWorktreeBootstrapForTab = useCallback((tabId: string) => {
+    setTabs((ts) =>
+      ts.map((t) => {
+        if (t.id !== tabId || t.agentSession.kind !== "worktree") return t;
+        const cmd = t.agentSession.info.bootstrapShellCommand?.trim();
+        if (!cmd) return t;
+        return {
+          ...t,
+          agentSession: {
+            kind: "worktree",
+            info: { ...t.agentSession.info, bootstrapShellCommand: null },
+          },
+        };
+      }),
+    );
+  }, []);
+
   const fileTreeRoot = useMemo(() => {
     if (!projectRoot || !activeTab) return null;
+    // Filesystem scan uses the Tauri FS scope from "Open repository" (`projectRoot`).
+    // Linked worktree paths are usually outside that directory, so scanning them returns
+    // nothing. Only use the worktree path in Agent view, where the tree should match
+    // the PTY/checkout (Diff still uses git on the worktree via `gitCheckoutRootForDiff`).
     if (
       activeTab.viewMode === "agent" &&
       activeTab.agentSession.kind === "worktree"
     ) {
-      return activeTab.agentSession.info.path;
+      return agentWorktreeBrowseRoot(projectRoot, activeTab.agentSession.info);
+    }
+    return projectRoot;
+  }, [projectRoot, activeTab]);
+
+  /** `git diff` / status root: agent worktree checkout when this tab targets one, else the opened project folder. */
+  const gitCheckoutRootForDiff = useMemo(() => {
+    if (!projectRoot) return null;
+    if (!activeTab) return projectRoot;
+    if (activeTab.agentSession.kind === "worktree") {
+      return agentWorktreeBrowseRoot(projectRoot, activeTab.agentSession.info);
     }
     return projectRoot;
   }, [projectRoot, activeTab]);
@@ -357,17 +418,58 @@ export default function App() {
   useEffect(() => {
     setAgentDialogOpen(false);
     setAgentDialogError(null);
+    setAgentResumeDialogOpen(false);
+    setAgentResumeError(null);
+    setAgentResumeRows([]);
   }, [activeTabId]);
+
+  useEffect(() => {
+    if (!agentResumeDialogOpen || !projectRoot) return;
+    let cancelled = false;
+    setAgentResumeLoading(true);
+    setAgentResumeError(null);
+    (async () => {
+      try {
+        const rows = await invoke<ListedWorktreeRow[]>("git_list_worktrees", {
+          rootPath: projectRoot,
+        });
+        if (!cancelled) setAgentResumeRows(rows);
+      } catch (e) {
+        if (!cancelled) {
+          setAgentResumeRows([]);
+          setAgentResumeError(
+            e instanceof Error ? e.message : String(e),
+          );
+        }
+      } finally {
+        if (!cancelled) setAgentResumeLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agentResumeDialogOpen, projectRoot]);
 
   /** Bind repository + default branch; reset tabs (one project per window). */
   useEffect(() => {
+    const killAgentsForStaleTabs = () => {
+      for (const t of tabsRef.current) {
+        if (agentSessionConfigured(t.agentSession)) {
+          void invoke("terminal_kill", { sessionId: t.id }).catch(() => {});
+        }
+      }
+    };
+
     if (!projectRoot) {
+      killAgentsForStaleTabs();
       setDefaultBranchInfo(null);
       setTabs([]);
       setActiveTabId(null);
       setScan(null);
       return;
     }
+
+    killAgentsForStaleTabs();
 
     let cancelled = false;
     (async () => {
@@ -505,11 +607,12 @@ export default function App() {
   const fileError = activeTab?.fileError ?? null;
   const agentSession = activeTab?.agentSession ?? { kind: "unset" };
   const agentConfigured = agentSessionConfigured(agentSession);
-  const agentShellCwd = useMemo(
-    () =>
-      projectRoot ? agentShellRoot(projectRoot, agentSession) : null,
-    [projectRoot, agentSession],
+  const tabsWithAgentSession = useMemo(
+    () => tabs.filter((t) => agentSessionConfigured(t.agentSession)),
+    [tabs],
   );
+  const showAgentDeck =
+    !!projectRoot && tabsWithAgentSession.length > 0;
 
   const diffTreeScan = useMemo((): ScanWorkspaceResult | null => {
     if (viewMode !== "diff") return null;
@@ -537,7 +640,7 @@ export default function App() {
         : null;
 
   useEffect(() => {
-    if (!projectRoot || !activeTabId || viewMode !== "diff") {
+    if (!gitCheckoutRootForDiff || !activeTabId || viewMode !== "diff") {
       if (activeTabId) {
         patchTab(activeTabId, {
           diffEntries: [],
@@ -563,7 +666,7 @@ export default function App() {
         const files = await invoke<BranchDiffFileEntry[]>(
           "git_worktree_diff_files",
           {
-            rootPath: projectRoot,
+            rootPath: gitCheckoutRootForDiff,
           },
         );
         if (cancelled || activeTabIdRef.current !== tid) return;
@@ -599,7 +702,7 @@ export default function App() {
       cancelled = true;
     };
   }, [
-    projectRoot,
+    gitCheckoutRootForDiff,
     activeTabId,
     viewMode,
     diffLoadGeneration,
@@ -607,7 +710,12 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!projectRoot || !activeTabId || viewMode !== "diff" || !selectedRel) {
+    if (
+      !gitCheckoutRootForDiff ||
+      !activeTabId ||
+      viewMode !== "diff" ||
+      !selectedRel
+    ) {
       if (activeTabId) {
         patchTab(activeTabId, {
           diffPatchText: null,
@@ -629,7 +737,7 @@ export default function App() {
     (async () => {
       try {
         const patch = await invoke<string>("git_worktree_diff_patch", {
-          rootPath: projectRoot,
+          rootPath: gitCheckoutRootForDiff,
           path: selectedRel,
         });
         if (!cancelled && activeTabIdRef.current === tid) {
@@ -654,7 +762,7 @@ export default function App() {
       cancelled = true;
     };
   }, [
-    projectRoot,
+    gitCheckoutRootForDiff,
     activeTabId,
     viewMode,
     selectedRel,
@@ -785,6 +893,7 @@ export default function App() {
       if (!activeTabId || !activeTab) return;
       setPreferencesOpen(false);
       setAgentDialogError(null);
+      setAgentResumeDialogOpen(false);
 
       if (v === "browse") {
         setAgentDialogOpen(false);
@@ -886,6 +995,13 @@ export default function App() {
 
   const closeTab = useCallback(
     (id: string) => {
+      const tabBeingClosed = tabsRef.current.find((t) => t.id === id);
+      if (
+        tabBeingClosed &&
+        agentSessionConfigured(tabBeingClosed.agentSession)
+      ) {
+        void invoke("terminal_kill", { sessionId: id }).catch(() => {});
+      }
       setTabs((ts) => {
         if (ts.length <= 1) return ts;
         const i = ts.findIndex((t) => t.id === id);
@@ -916,7 +1032,11 @@ export default function App() {
       setAgentDialogError(null);
       setAgentDialogBusy(true);
       try {
-        const wt = await invoke<{ path: string; branch: string }>(
+        const wt = await invoke<{
+          path: string;
+          branch: string;
+          bootstrapShellCommand: string;
+        }>(
           "git_create_agent_worktree",
           {
             rootPath: projectRoot,
@@ -931,6 +1051,7 @@ export default function App() {
               path: wt.path,
               branch: wt.branch,
               purpose,
+              bootstrapShellCommand: wt.bootstrapShellCommand,
             },
           },
           viewMode: "agent",
@@ -951,6 +1072,48 @@ export default function App() {
     [projectRoot, activeTabId, defaultStartPoint, patchTab],
   );
 
+  const onPickResumedWorktree = useCallback(
+    (row: ListedWorktreeRow) => {
+      if (!activeTabId) return;
+      const branchLabel = row.branchShort ?? "(detached)";
+      const purpose =
+        row.branchShort != null &&
+        row.branchShort.length > 0 &&
+        !row.detached
+          ? `Resumed (${row.branchShort})`
+          : "Resumed (detached HEAD)";
+      setAgentResumeError(null);
+      patchTab(activeTabId, {
+        viewMode: "agent",
+        agentSession: {
+          kind: "worktree",
+          info: {
+            path: row.path,
+            branch: branchLabel,
+            purpose,
+            bootstrapShellCommand: null,
+            resumedFromWorktreePicker: true,
+          },
+        },
+      });
+      setAgentResumeDialogOpen(false);
+    },
+    [activeTabId, patchTab],
+  );
+
+  const openResumeExistingWorktrees = useCallback(() => {
+    setAgentDialogError(null);
+    setAgentResumeError(null);
+    setAgentDialogOpen(false);
+    setAgentResumeDialogOpen(true);
+  }, []);
+
+  const backResumeDialogToPurpose = useCallback(() => {
+    setAgentResumeDialogOpen(false);
+    setAgentResumeError(null);
+    setAgentDialogOpen(true);
+  }, []);
+
   const breadcrumb =
     viewMode === "agent"
       ? agentSession.kind === "worktree"
@@ -966,11 +1129,12 @@ export default function App() {
           (projectRoot && scanning ? "Indexing workspace…" : "—"));
 
   const indexingWorkspace = Boolean(projectRoot && scanning);
-  const diffSidebarLoading =
-    viewMode === "diff" && Boolean(projectRoot) && diffListLoading;
-
-  const treeBusy =
-    viewMode !== "agent" && (indexingWorkspace || diffSidebarLoading);
+  const diffListBusy = Boolean(projectRoot && diffListLoading);
+  const diffSidebarLoading = viewMode === "diff" && diffListBusy;
+  /** Browse uses filesystem scan; diff only waits on the git changed-file list (not unrelated indexing). */
+  const treeSidebarBusy =
+    viewMode !== "agent" &&
+    (viewMode === "browse" ? indexingWorkspace : diffListBusy);
 
   if (!projectRoot) {
     return (
@@ -1032,7 +1196,7 @@ export default function App() {
           data-focus-map-label="File tree"
           tabIndex={-1}
         >
-          {treeBusy ? (
+          {treeSidebarBusy ? (
             <WorkspaceIndexingPanel context="tree" />
           ) : viewMode === "diff" && diffListError ? (
             <div className="pane-placeholder pane-error">{diffListError}</div>
@@ -1086,7 +1250,7 @@ export default function App() {
                   ? "Select a file"
                   : "No README in root — pick a file"}
         </header>
-        {treeBusy ? (
+        {treeSidebarBusy ? (
           <WorkspaceIndexingPanel context="viewer" />
         ) : viewMode === "diff" ? (
           !selectedRel ? (
@@ -1158,7 +1322,7 @@ export default function App() {
             }}
           />
           <span
-            className={`toolbar-breadcrumb${treeBusy ? " toolbar-breadcrumb--busy" : ""}`}
+            className={`toolbar-breadcrumb${treeSidebarBusy ? " toolbar-breadcrumb--busy" : ""}`}
             title={selectedRel ?? undefined}
           >
             {breadcrumb}
@@ -1281,51 +1445,104 @@ export default function App() {
 
       <div
         className={cn("app-body", agentConfigured && "app-body--stacked")}
-        aria-busy={treeBusy || undefined}
+        aria-busy={treeSidebarBusy || undefined}
       >
-        {agentConfigured && agentShellCwd ? (
+        {showAgentDeck ? (
           <div
             className={cn(
               "app-stack-layer app-stack-agent",
-              agentViewFront
+              agentViewFront && agentConfigured
                 ? "app-stack-layer--front"
                 : "app-stack-layer--back",
             )}
-            inert={!agentViewFront}
-            aria-hidden={!agentViewFront}
+            inert={!(agentViewFront && agentConfigured)}
+            aria-hidden={!(agentViewFront && agentConfigured)}
           >
-            <section className="agent-panel" tabIndex={-1}>
-              <header>
-                {agentSession.kind === "worktree" ? (
-                  <>
-                    <span className="text-zinc-600 dark:text-zinc-400">
-                      {agentSession.info.purpose}
-                    </span>
-                    <span className="mx-2 text-zinc-400">·</span>
-                    <span className="font-mono text-xs opacity-90">
-                      {agentSession.info.path}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-zinc-600 dark:text-zinc-400">
-                      This repository
-                    </span>
-                    <span className="mx-2 text-zinc-400">·</span>
-                    <span className="font-mono text-xs opacity-90">
-                      {projectRoot}
-                    </span>
-                  </>
-                )}
-              </header>
-              <AgentTerminal
-                key={`${activeTabId}:${agentShellCwd}`}
-                rootPath={agentShellCwd}
-                lightChrome={prefersLightChrome}
-                visible={agentViewFront}
-                startupShellLine={defaultAgentStartupCommand(defaultAgentCli)}
-              />
-            </section>
+            {agentConfigured ? (
+              <section className="agent-panel" tabIndex={-1}>
+                <header>
+                  {agentSession.kind === "worktree" ? (
+                    <>
+                      <span className="text-zinc-600 dark:text-zinc-400">
+                        {agentSession.info.purpose}
+                      </span>
+                      <span className="mx-2 text-zinc-400">·</span>
+                      <span className="font-mono text-xs opacity-90">
+                        {agentSession.info.path}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-zinc-600 dark:text-zinc-400">
+                        This repository
+                      </span>
+                      <span className="mx-2 text-zinc-400">·</span>
+                      <span className="font-mono text-xs opacity-90">
+                        {projectRoot}
+                      </span>
+                    </>
+                  )}
+                </header>
+                {tabsWithAgentSession.map((t) => {
+                  const shellCwd = agentShellRoot(projectRoot!, t.agentSession)!;
+                  const inMainAgentLayout =
+                    activeTab != null &&
+                    t.id === activeTab.id &&
+                    agentSessionConfigured(activeTab.agentSession);
+                  return (
+                    <div
+                      key={`${t.id}:${shellCwd}`}
+                      className={cn(
+                        "flex min-h-0 flex-col",
+                        inMainAgentLayout
+                          ? "min-h-0 flex-1"
+                          : "pointer-events-none fixed top-0 -left-[9999px] h-[420px] w-[min(100vw,800px)] opacity-0",
+                      )}
+                    >
+                      <AgentTerminal
+                        sessionId={t.id}
+                        rootPath={shellCwd}
+                        lightChrome={prefersLightChrome}
+                        visible={t.id === activeTabId && agentViewFront}
+                        startupShellLine={composeAgentStartupShellLine(
+                          t.agentSession,
+                          defaultAgentCli,
+                        )}
+                        onStartupShellLineConsumed={() =>
+                          clearWorktreeBootstrapForTab(t.id)
+                        }
+                      />
+                    </div>
+                  );
+                })}
+              </section>
+            ) : (
+              <div
+                aria-hidden
+                className="pointer-events-none fixed top-0 -left-[9999px] h-[420px] w-[min(100vw,800px)] opacity-0"
+              >
+                {tabsWithAgentSession.map((t) => {
+                  const shellCwd = agentShellRoot(projectRoot!, t.agentSession)!;
+                  return (
+                    <div key={`${t.id}:${shellCwd}`}>
+                      <AgentTerminal
+                        sessionId={t.id}
+                        rootPath={shellCwd}
+                        lightChrome={prefersLightChrome}
+                        visible={false}
+                        startupShellLine={composeAgentStartupShellLine(
+                          t.agentSession,
+                          defaultAgentCli,
+                        )}
+                        onStartupShellLineConsumed={() =>
+                          clearWorktreeBootstrapForTab(t.id)
+                        }
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         ) : null}
         {agentConfigured ? (
@@ -1359,6 +1576,7 @@ export default function App() {
           void onConfirmAgentPurpose(purpose);
         }}
         onUseThisRepository={onEnterAgentThisRepository}
+        onResumeExistingWorktree={openResumeExistingWorktrees}
         busy={agentDialogBusy}
         error={agentDialogError}
         defaultBranchLabel={
@@ -1367,6 +1585,20 @@ export default function App() {
             : defaultStartPoint
         }
         useCheckoutBranchName={defaultBranchInfo?.shortName ?? "main"}
+      />
+
+      <AgentResumeWorktreeDialog
+        open={agentResumeDialogOpen}
+        onOpenChange={(open) => {
+          if (agentResumeLoading) return;
+          setAgentResumeDialogOpen(open);
+          if (!open) setAgentResumeError(null);
+        }}
+        onBack={backResumeDialogToPurpose}
+        loading={agentResumeLoading}
+        error={agentResumeError}
+        worktrees={agentResumeRows}
+        onPick={onPickResumedWorktree}
       />
 
       <PreferencesDialog
@@ -1381,7 +1613,9 @@ export default function App() {
       />
 
       <FocusMapOverlay
-        disabled={filePaletteOpen || preferencesOpen}
+        disabled={
+          filePaletteOpen || preferencesOpen || agentResumeDialogOpen
+        }
         landmarksRootRef={shellRef}
       />
 
