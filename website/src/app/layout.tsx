@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Compound — orchestrate agents on your codebase",
+  title: "Compound — the Agentic Development Environment",
   description:
-    "A developer tool for orchestrating agents, reviewing changes, and exploring code in context.",
+    "The IDE is dead. Long live the ADE—orchestrate coding agents on your real repo, review every diff, and explore code in context.",
 };
 
 export default function RootLayout({

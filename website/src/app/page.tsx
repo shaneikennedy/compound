@@ -109,15 +109,18 @@ export default function Home() {
         <section className="flex flex-col items-center gap-10 md:flex-row md:items-center md:justify-between md:gap-16">
           <div className="max-w-xl flex-1 text-center md:text-left">
             <p className="mb-4 inline-flex items-center rounded-full border border-zinc-700 bg-zinc-900/80 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-zinc-400">
-              Developer tool
+              Agentic Development Environment
             </p>
             <h1 className="text-balance text-4xl font-semibold tracking-tight text-zinc-50 md:text-5xl">
-              Orchestrate agents on real repos—not toy demos.
+              The IDE is dead.{" "}
+              <span className="text-cyan-400">Long live the ADE.</span>
             </h1>
             <p className="mt-5 text-pretty text-lg leading-relaxed text-zinc-400">
-              Compound keeps coding agents grounded in your tree, diffs, and
-              terminals so you stay in flow: delegate work, inspect every change,
-              and explore unfamiliar code without losing the thread.
+              An <strong className="font-medium text-zinc-200">Agentic Development Environment</strong>{" "}
+              is where you orchestrate coding agents against your real codebase—not
+              a single editor pane, but your tree, diffs, and terminals in one
+              flow. Delegate work, review every change, and explore unfamiliar
+              code without losing the thread.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3 md:justify-start">
               <span className="rounded-lg border border-zinc-700 bg-zinc-900/60 px-4 py-2 font-mono text-xs text-zinc-300">
