@@ -87,7 +87,7 @@ export default function Home() {
       <div className="pointer-events-none absolute inset-0 dev-radial" />
 
       <header className="relative z-10 border-b border-zinc-800/80 bg-zinc-950/70 backdrop-blur-md">
-        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
+        <div className="mx-auto flex h-14 max-w-screen-2xl items-center justify-between px-6">
           <span className="font-mono text-sm tracking-tight text-zinc-100">
             compound
           </span>
@@ -105,7 +105,7 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="relative z-10 mx-auto flex w-full max-w-5xl flex-1 flex-col px-6 pb-24 pt-16 md:pb-32 md:pt-24">
+      <main className="relative z-10 mx-auto flex w-full max-w-screen-2xl flex-1 flex-col px-6 pb-24 pt-16 md:pb-32 md:pt-24">
         <section className="flex flex-col items-center gap-10 md:flex-row md:items-center md:justify-between md:gap-16">
           <div className="max-w-xl flex-1 text-center md:text-left">
             <p className="mb-4 inline-flex items-center rounded-full border border-zinc-700 bg-zinc-900/80 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-zinc-400">
@@ -148,6 +148,40 @@ export default function Home() {
               />
             </div>
           </div>
+        </section>
+
+        <section
+          aria-label="Product screenshots"
+          className="mt-16 grid grid-cols-1 gap-8 md:mt-24 lg:grid-cols-2 lg:gap-10"
+        >
+          <figure className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950/60 shadow-2xl shadow-black/30">
+            <figcaption className="border-b border-zinc-800 px-5 py-3 font-mono text-xs uppercase tracking-[0.14em] text-zinc-500">
+              Diff
+            </figcaption>
+            <Image
+              src="/diff.png"
+              alt="Compound diff view showing changed files and a side-by-side patch"
+              width={1101}
+              height={749}
+              priority
+              sizes="(min-width: 1280px) 740px, 100vw"
+              className="h-auto w-full"
+            />
+          </figure>
+          <figure className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950/60 shadow-2xl shadow-black/30">
+            <figcaption className="border-b border-zinc-800 px-5 py-3 font-mono text-xs uppercase tracking-[0.14em] text-zinc-500">
+              Agent
+            </figcaption>
+            <Image
+              src="/agent.png"
+              alt="Compound agent view with an integrated terminal session"
+              width={1101}
+              height={749}
+              loading="eager"
+              sizes="(min-width: 1280px) 740px, 100vw"
+              className="h-auto w-full"
+            />
+          </figure>
         </section>
 
         <section
@@ -249,7 +283,7 @@ export default function Home() {
       </main>
 
       <footer className="relative z-10 border-t border-zinc-800/90 bg-zinc-950/80 py-10 backdrop-blur-md">
-        <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-4 px-6 text-center md:flex-row md:text-left">
+        <div className="mx-auto flex max-w-screen-2xl flex-col items-center justify-between gap-4 px-6 text-center md:flex-row md:text-left">
           <span className="font-mono text-sm text-zinc-500">
             compound · ship with agents in the loop
           </span>
