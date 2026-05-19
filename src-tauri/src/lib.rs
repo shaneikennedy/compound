@@ -733,6 +733,339 @@ fn parse_git_worktree_porcelain(output: &str) -> Vec<(String, Option<String>, bo
         .collect()
 }
 
+// —— Working tree status (stage / commit / push) ——
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusFileEntry {
+    pub path: String,
+    /// added | modified | deleted | renamed
+    pub status: String,
+    pub old_path: Option<String>,
+    /// staged | unstaged | untracked
+    pub area: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWorktreeStatus {
+    pub branch: Option<String>,
+    pub files: Vec<GitStatusFileEntry>,
+}
+
+fn parse_name_status_lines(text: &str, area: &str) -> Vec<GitStatusFileEntry> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        if let Some(entry) = map_name_status_to_entry(&parts) {
+            out.push(GitStatusFileEntry {
+                path: entry.path,
+                status: entry.status,
+                old_path: entry.old_path,
+                area: area.to_string(),
+            });
+        }
+    }
+    out
+}
+
+/// Staged, unstaged, and untracked paths for the Git tab.
+#[tauri::command]
+fn git_worktree_status(root_path: String) -> Result<GitWorktreeStatus, String> {
+    let root = validate_workspace_dir(&root_path)?;
+    ensure_git_worktree(root)?;
+
+    let branch = run_git_stdout(root, &["branch", "--show-current"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let mut files: Vec<GitStatusFileEntry> = Vec::new();
+
+    let staged = run_git_diff_stdout(
+        root,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--name-status",
+            "-M",
+            "-C",
+            "--cached",
+        ],
+    )
+    .unwrap_or_default();
+    files.extend(parse_name_status_lines(&staged, "staged"));
+
+    let unstaged = run_git_diff_stdout(
+        root,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--name-status",
+            "-M",
+            "-C",
+        ],
+    )
+    .unwrap_or_default();
+    files.extend(parse_name_status_lines(&unstaged, "unstaged"));
+
+    let untracked = run_git_stdout(
+        root,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+        ],
+    )
+    .unwrap_or_default();
+    for line in untracked.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        files.push(GitStatusFileEntry {
+            path: line.to_string(),
+            status: "added".to_string(),
+            old_path: None,
+            area: "untracked".to_string(),
+        });
+    }
+
+    files.sort_by(|a, b| {
+        a.area
+            .cmp(&b.area)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+
+    Ok(GitWorktreeStatus { branch, files })
+}
+
+fn validate_git_change_area(area: &str) -> Result<&str, String> {
+    match area.trim() {
+        "staged" | "unstaged" | "untracked" => Ok(area.trim()),
+        _ => Err("Invalid change area.".into()),
+    }
+}
+
+/// Unified diff for one path in staged, unstaged, or untracked area.
+#[tauri::command]
+fn git_status_diff_patch(
+    root_path: String,
+    path: String,
+    area: String,
+) -> Result<String, String> {
+    let root = validate_workspace_dir(&root_path)?;
+    ensure_git_worktree(root)?;
+    validate_repo_rel_path(&path)?;
+    let p = path.trim();
+    let area = validate_git_change_area(&area)?;
+
+    match area {
+        "staged" => run_git_diff_stdout(
+            root,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--no-ext-diff",
+                "-U3",
+                "--cached",
+                "--",
+                p,
+            ],
+        ),
+        "unstaged" => run_git_diff_stdout(
+            root,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--no-ext-diff",
+                "-U3",
+                "--",
+                p,
+            ],
+        ),
+        "untracked" => {
+            let abs = Path::new(root).join(p);
+            if !abs.is_file() {
+                return Err("Untracked path is not a regular file.".into());
+            }
+            run_git_diff_stdout(
+                root,
+                &[
+                    "-c",
+                    "core.quotepath=false",
+                    "diff",
+                    "--no-ext-diff",
+                    "-U3",
+                    "--no-index",
+                    "--text",
+                    "--",
+                    "/dev/null",
+                    p,
+                ],
+            )
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn validate_repo_rel_paths(paths: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        validate_repo_rel_path(path)?;
+        out.push(path.trim().to_string());
+    }
+    Ok(out)
+}
+
+/// Stage paths (`git add`). Untracked paths are added; tracked paths are staged.
+#[tauri::command]
+fn git_stage_paths(root_path: String, paths: Vec<String>) -> Result<(), String> {
+    let root = validate_workspace_dir(&root_path)?;
+    ensure_git_worktree(root)?;
+    let paths = validate_repo_rel_paths(&paths)?;
+    if paths.is_empty() {
+        return Err("No paths to stage.".into());
+    }
+    let mut cmd = git_command_spawn(Some(Path::new(root)));
+    cmd.arg("add").arg("--");
+    for p in &paths {
+        cmd.arg(p);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Could not run git: {e}. Is git installed and on PATH?"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(git_error_message("add", &output))
+    }
+}
+
+/// Unstage paths (`git restore --staged`).
+#[tauri::command]
+fn git_unstage_paths(root_path: String, paths: Vec<String>) -> Result<(), String> {
+    let root = validate_workspace_dir(&root_path)?;
+    ensure_git_worktree(root)?;
+    let paths = validate_repo_rel_paths(&paths)?;
+    if paths.is_empty() {
+        return Err("No paths to unstage.".into());
+    }
+    let mut cmd = git_command_spawn(Some(Path::new(root)));
+    cmd.arg("restore").arg("--staged").arg("--");
+    for p in &paths {
+        cmd.arg(p);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Could not run git: {e}. Is git installed and on PATH?"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(git_error_message("restore --staged", &output))
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitResult {
+    pub revision: String,
+    pub summary: String,
+}
+
+/// Create a commit with the given message.
+#[tauri::command]
+fn git_commit(root_path: String, message: String) -> Result<GitCommitResult, String> {
+    let root = validate_workspace_dir(&root_path)?;
+    ensure_git_worktree(root)?;
+    let msg = message.trim();
+    if msg.is_empty() {
+        return Err("Commit message is required.".into());
+    }
+
+    let output = git_command_spawn(Some(Path::new(root)))
+        .args(["commit", "-m", msg])
+        .output()
+        .map_err(|e| format!("Could not run git: {e}. Is git installed and on PATH?"))?;
+    if !output.status.success() {
+        return Err(git_error_message("commit", &output));
+    }
+
+    let revision = run_git_stdout(root, &["rev-parse", "--short", "HEAD"]).unwrap_or_default();
+    let summary = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(GitCommitResult {
+        revision: revision.trim().to_string(),
+        summary,
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPushResult {
+    pub summary: String,
+}
+
+/// Push the current branch to its upstream (or set upstream on first push).
+#[tauri::command]
+fn git_push(root_path: String) -> Result<GitPushResult, String> {
+    let root = validate_workspace_dir(&root_path)?;
+    ensure_git_worktree(root)?;
+
+    let branch = run_git_stdout(root, &["branch", "--show-current"])?
+        .trim()
+        .to_string();
+    if branch.is_empty() {
+        return Err("Cannot push from detached HEAD.".into());
+    }
+
+    let upstream = run_git_stdout(
+        root,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{u}",
+        ],
+    );
+
+    let output = if upstream.is_ok() {
+        git_command_spawn(Some(Path::new(root)))
+            .arg("push")
+            .output()
+    } else {
+        git_command_spawn(Some(Path::new(root)))
+            .args(["push", "-u", "origin", &branch])
+            .output()
+    }
+    .map_err(|e| format!("Could not run git: {e}. Is git installed and on PATH?"))?;
+
+    if !output.status.success() {
+        return Err(git_error_message("push", &output));
+    }
+
+    let summary = {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "Push completed.".to_string()
+        }
+    };
+
+    Ok(GitPushResult { summary })
+}
+
 /// Linked worktrees (`git worktree list --porcelain`).
 #[tauri::command]
 fn git_list_worktrees(root_path: String) -> Result<Vec<GitListedWorktree>, String> {
@@ -774,6 +1107,12 @@ pub fn run() {
             git_branch_list,
             git_worktree_diff_files,
             git_worktree_diff_patch,
+            git_worktree_status,
+            git_status_diff_patch,
+            git_stage_paths,
+            git_unstage_paths,
+            git_commit,
+            git_push,
             git_list_worktrees,
             terminal::terminal_spawn,
             terminal::terminal_write,

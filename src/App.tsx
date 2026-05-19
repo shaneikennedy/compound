@@ -30,6 +30,7 @@ import { AgentTerminal } from "./components/AgentTerminal";
 import { FocusMapOverlay } from "./components/FocusMapOverlay";
 import { CodeViewer } from "./components/CodeViewer";
 import { DiffViewer } from "./components/DiffViewer";
+import { GitStatusPane } from "./components/GitStatusPane";
 import { FileSearchPalette } from "./components/FileSearchPalette";
 import { ProjectOpenScreen } from "./components/ProjectOpenScreen";
 import { RepoTreePane } from "./components/RepoTreePane";
@@ -55,6 +56,8 @@ import {
 import {
   type AgentSession,
   type BranchDiffFileEntry,
+  type GitChangeArea,
+  type GitWorktreeStatus,
   type ViewModeOption,
   agentSessionConfigured,
   agentShellRoot,
@@ -600,6 +603,18 @@ export default function App() {
   const diffPatchText = activeTab?.diffPatchText ?? null;
   const diffPatchLoading = activeTab?.diffPatchLoading ?? false;
   const diffPatchError = activeTab?.diffPatchError ?? null;
+  const gitStatus = activeTab?.gitStatus ?? null;
+  const gitStatusLoading = activeTab?.gitStatusLoading ?? false;
+  const gitStatusError = activeTab?.gitStatusError ?? null;
+  const gitSelectedArea = activeTab?.gitSelectedArea ?? null;
+  const gitPatchText = activeTab?.gitPatchText ?? null;
+  const gitPatchLoading = activeTab?.gitPatchLoading ?? false;
+  const gitPatchError = activeTab?.gitPatchError ?? null;
+  const gitLoadGeneration = activeTab?.gitLoadGeneration ?? 0;
+  const gitCommitMessage = activeTab?.gitCommitMessage ?? "";
+  const gitActionBusy = activeTab?.gitActionBusy ?? false;
+  const gitActionError = activeTab?.gitActionError ?? null;
+  const gitActionNotice = activeTab?.gitActionNotice ?? null;
   const sidebarOpen = activeTab?.sidebarOpen ?? true;
   const filePaletteOpen = activeTab?.filePaletteOpen ?? false;
   const fileLoading = activeTab?.fileLoading ?? false;
@@ -770,6 +785,267 @@ export default function App() {
     patchTab,
   ]);
 
+  useEffect(() => {
+    if (!gitCheckoutRootForDiff || !activeTabId || viewMode !== "git") {
+      if (activeTabId) {
+        patchTab(activeTabId, {
+          gitStatus: null,
+          gitStatusError: null,
+          gitStatusLoading: false,
+          gitPatchText: null,
+          gitPatchError: null,
+          gitPatchLoading: false,
+        });
+      }
+      return;
+    }
+
+    let cancelled = false;
+    const tid = activeTabId;
+    patchTab(tid, {
+      gitStatusLoading: true,
+      gitStatusError: null,
+    });
+
+    (async () => {
+      try {
+        const status = await invoke<GitWorktreeStatus>("git_worktree_status", {
+          rootPath: gitCheckoutRootForDiff,
+        });
+        if (cancelled || activeTabIdRef.current !== tid) return;
+        setTabs((ts) =>
+          ts.map((t) => {
+            if (t.id !== tid) return t;
+            const curPath = t.selectedRel;
+            const curArea = t.gitSelectedArea;
+            const stillSelected =
+              curPath != null &&
+              curArea != null &&
+              status.files.some(
+                (f) => f.path === curPath && f.area === curArea,
+              );
+            const first = status.files[0] ?? null;
+            return {
+              ...t,
+              gitStatus: status,
+              gitStatusError: null,
+              gitStatusLoading: false,
+              selectedRel: stillSelected ? curPath : (first?.path ?? null),
+              gitSelectedArea: stillSelected
+                ? curArea
+                : (first?.area ?? null),
+            };
+          }),
+        );
+      } catch (e) {
+        if (!cancelled && activeTabIdRef.current === tid) {
+          patchTab(tid, {
+            gitStatus: null,
+            gitStatusError: e instanceof Error ? e.message : String(e),
+            gitStatusLoading: false,
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    gitCheckoutRootForDiff,
+    activeTabId,
+    viewMode,
+    gitLoadGeneration,
+    patchTab,
+  ]);
+
+  useEffect(() => {
+    if (
+      !gitCheckoutRootForDiff ||
+      !activeTabId ||
+      viewMode !== "git" ||
+      !selectedRel ||
+      !gitSelectedArea
+    ) {
+      if (activeTabId) {
+        patchTab(activeTabId, {
+          gitPatchText: null,
+          gitPatchError: null,
+          gitPatchLoading: false,
+        });
+      }
+      return;
+    }
+
+    let cancelled = false;
+    const tid = activeTabId;
+    const area = gitSelectedArea;
+    const path = selectedRel;
+    patchTab(tid, {
+      gitPatchLoading: true,
+      gitPatchError: null,
+      gitPatchText: null,
+    });
+
+    (async () => {
+      try {
+        const patch = await invoke<string>("git_status_diff_patch", {
+          rootPath: gitCheckoutRootForDiff,
+          path,
+          area,
+        });
+        if (!cancelled && activeTabIdRef.current === tid) {
+          patchTab(tid, {
+            gitPatchText: patch,
+            gitPatchError: null,
+            gitPatchLoading: false,
+          });
+        }
+      } catch (e) {
+        if (!cancelled && activeTabIdRef.current === tid) {
+          patchTab(tid, {
+            gitPatchText: null,
+            gitPatchError: e instanceof Error ? e.message : String(e),
+            gitPatchLoading: false,
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    gitCheckoutRootForDiff,
+    activeTabId,
+    viewMode,
+    selectedRel,
+    gitSelectedArea,
+    gitLoadGeneration,
+    patchTab,
+  ]);
+
+  const refreshGitStatus = useCallback(() => {
+    if (!activeTabId) return;
+    patchTab(activeTabId, {
+      gitLoadGeneration: gitLoadGeneration + 1,
+      gitActionNotice: null,
+    });
+  }, [activeTabId, gitLoadGeneration, patchTab]);
+
+  const runGitMutation = useCallback(
+    async (fn: () => Promise<void>) => {
+      if (!activeTabId) return;
+      patchTab(activeTabId, {
+        gitActionBusy: true,
+        gitActionError: null,
+        gitActionNotice: null,
+      });
+      try {
+        await fn();
+        refreshGitStatus();
+      } catch (e) {
+        patchTab(activeTabId, {
+          gitActionError: e instanceof Error ? e.message : String(e),
+        });
+      } finally {
+        patchTab(activeTabId, { gitActionBusy: false });
+      }
+    },
+    [activeTabId, patchTab, refreshGitStatus],
+  );
+
+  const onGitStagePaths = useCallback(
+    (paths: string[]) => {
+      if (!gitCheckoutRootForDiff || paths.length === 0) return;
+      void runGitMutation(async () => {
+        await invoke("git_stage_paths", {
+          rootPath: gitCheckoutRootForDiff,
+          paths,
+        });
+      });
+    },
+    [gitCheckoutRootForDiff, runGitMutation],
+  );
+
+  const onGitUnstagePaths = useCallback(
+    (paths: string[]) => {
+      if (!gitCheckoutRootForDiff || paths.length === 0) return;
+      void runGitMutation(async () => {
+        await invoke("git_unstage_paths", {
+          rootPath: gitCheckoutRootForDiff,
+          paths,
+        });
+      });
+    },
+    [gitCheckoutRootForDiff, runGitMutation],
+  );
+
+  const onGitStageAll = useCallback(
+    (area: "unstaged" | "untracked") => {
+      const paths =
+        gitStatus?.files.filter((f) => f.area === area).map((f) => f.path) ??
+        [];
+      onGitStagePaths(paths);
+    },
+    [gitStatus, onGitStagePaths],
+  );
+
+  const onGitUnstageAll = useCallback(() => {
+    const paths =
+      gitStatus?.files.filter((f) => f.area === "staged").map((f) => f.path) ??
+      [];
+    onGitUnstagePaths(paths);
+  }, [gitStatus, onGitUnstagePaths]);
+
+  const onGitCommit = useCallback(() => {
+    if (!gitCheckoutRootForDiff || !activeTabId) return;
+    const message = gitCommitMessage.trim();
+    if (!message) {
+      patchTab(activeTabId, { gitActionError: "Commit message is required." });
+      return;
+    }
+    void runGitMutation(async () => {
+      const result = await invoke<{ revision: string; summary: string }>(
+        "git_commit",
+        {
+          rootPath: gitCheckoutRootForDiff,
+          message,
+        },
+      );
+      patchTab(activeTabId, {
+        gitCommitMessage: "",
+        gitActionNotice: result.summary || `Committed ${result.revision}`,
+      });
+    });
+  }, [
+    gitCheckoutRootForDiff,
+    activeTabId,
+    gitCommitMessage,
+    patchTab,
+    runGitMutation,
+  ]);
+
+  const onGitPush = useCallback(() => {
+    if (!gitCheckoutRootForDiff || !activeTabId) return;
+    void runGitMutation(async () => {
+      const result = await invoke<{ summary: string }>("git_push", {
+        rootPath: gitCheckoutRootForDiff,
+      });
+      patchTab(activeTabId, {
+        gitActionNotice: result.summary,
+      });
+    });
+  }, [gitCheckoutRootForDiff, activeTabId, patchTab, runGitMutation]);
+
+  const onSelectGitFile = useCallback(
+    (path: string, area: GitChangeArea) => {
+      if (!activeTabId) return;
+      patchTab(activeTabId, { selectedRel: path, gitSelectedArea: area });
+    },
+    [activeTabId, patchTab],
+  );
+
   const loadFileRel = useCallback(
     async (rel: string | null) => {
       if (!activeTabId || !fileTreeRoot || !rel) {
@@ -911,6 +1187,12 @@ export default function App() {
           viewMode: "diff",
           filePaletteOpen: false,
         });
+      } else if (v === "git") {
+        setAgentDialogOpen(false);
+        patchTab(activeTabId, {
+          viewMode: "git",
+          filePaletteOpen: false,
+        });
       } else if (agentSessionConfigured(activeTab.agentSession)) {
         setAgentDialogOpen(false);
         patchTab(activeTabId, {
@@ -974,6 +1256,11 @@ export default function App() {
       if (e.code === "KeyD") {
         e.preventDefault();
         applyViewMode("diff");
+        return;
+      }
+      if (e.code === "KeyG") {
+        e.preventDefault();
+        applyViewMode("git");
         return;
       }
       if (e.code === "KeyA") {
@@ -1125,16 +1412,30 @@ export default function App() {
           : diffListLoading
             ? "Loading changed files…"
             : "—"
+        : viewMode === "git"
+          ? selectedRel != null && gitSelectedArea
+            ? `${gitSelectedArea === "staged" ? "Staged" : gitSelectedArea === "untracked" ? "Untracked" : "Unstaged"} · ${selectedRel}`
+            : gitStatusLoading
+              ? "Loading git status…"
+              : gitStatus?.branch
+                ? `Git · ${gitStatus.branch}`
+                : "Git"
         : (selectedRel ??
           (projectRoot && scanning ? "Indexing workspace…" : "—"));
 
   const indexingWorkspace = Boolean(projectRoot && scanning);
   const diffListBusy = Boolean(projectRoot && diffListLoading);
+  const gitListBusy = Boolean(projectRoot && gitStatusLoading);
   const diffSidebarLoading = viewMode === "diff" && diffListBusy;
+  const gitSidebarLoading = viewMode === "git" && gitListBusy;
   /** Browse uses filesystem scan; diff only waits on the git changed-file list (not unrelated indexing). */
   const treeSidebarBusy =
     viewMode !== "agent" &&
-    (viewMode === "browse" ? indexingWorkspace : diffListBusy);
+    (viewMode === "browse"
+      ? indexingWorkspace
+      : viewMode === "git"
+        ? gitListBusy
+        : diffListBusy);
 
   if (!projectRoot) {
     return (
@@ -1198,6 +1499,21 @@ export default function App() {
         >
           {treeSidebarBusy ? (
             <WorkspaceIndexingPanel context="tree" />
+          ) : viewMode === "git" && gitStatusError ? (
+            <div className="pane-placeholder pane-error">{gitStatusError}</div>
+          ) : viewMode === "git" ? (
+            <GitStatusPane
+              files={gitStatus?.files ?? []}
+              branch={gitStatus?.branch ?? null}
+              selectedPath={selectedRel}
+              selectedArea={gitSelectedArea}
+              actionBusy={gitActionBusy}
+              onSelect={onSelectGitFile}
+              onStage={onGitStagePaths}
+              onUnstage={onGitUnstagePaths}
+              onStageAll={onGitStageAll}
+              onUnstageAll={onGitUnstageAll}
+            />
           ) : viewMode === "diff" && diffListError ? (
             <div className="pane-placeholder pane-error">{diffListError}</div>
           ) : viewMode === "diff" && diffEntries.length === 0 ? (
@@ -1242,6 +1558,14 @@ export default function App() {
               : selectedRel
                 ? (selectedRel.split("/").pop() ?? selectedRel)
                 : "Pick a changed file"
+            : viewMode === "git"
+              ? gitSidebarLoading
+                ? "Loading changes…"
+                : selectedRel
+                  ? (selectedRel.split("/").pop() ?? selectedRel)
+                  : gitStatus?.files.length
+                    ? "Pick a changed file"
+                    : "No local changes"
             : indexingWorkspace
               ? "Indexing workspace…"
               : selectedRel
@@ -1265,6 +1589,23 @@ export default function App() {
             <DiffViewer
               relativePath={selectedRel}
               patchText={diffPatchText ?? ""}
+              theme={resolvedCodeViewerTheme}
+              diffStyle={diffStyle}
+            />
+          )
+        ) : viewMode === "git" ? (
+          !selectedRel || !gitSelectedArea ? (
+            <div className="pane-placeholder">
+              {(gitStatus?.files.length ?? 0) === 0
+                ? "Working tree is clean."
+                : "Choose a file from the list."}
+            </div>
+          ) : gitPatchLoading ? (
+            <div className="pane-placeholder">Loading patch…</div>
+          ) : (
+            <DiffViewer
+              relativePath={selectedRel}
+              patchText={gitPatchText ?? ""}
               theme={resolvedCodeViewerTheme}
               diffStyle={diffStyle}
             />
@@ -1430,6 +1771,101 @@ export default function App() {
             </label>
           </div>
         ) : null}
+        {viewMode === "git" && projectRoot ? (
+          <div
+            className="toolbar-diff-bar toolbar-git-bar"
+            title="Stage, commit, and push local changes."
+          >
+            <div className="toolbar-diff-field">
+              <span className="toolbar-diff-field-label" aria-hidden="true">
+                &nbsp;
+              </span>
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                className="h-[30px] w-[30px] shrink-0 text-base"
+                aria-label="Refresh git status"
+                title="Reload git status"
+                disabled={gitActionBusy}
+                onClick={refreshGitStatus}
+              >
+                ↻
+              </Button>
+            </div>
+            <label className="toolbar-diff-field">
+              <span className="toolbar-diff-field-label">Layout</span>
+              <Select
+                value={diffStyle}
+                onValueChange={(v) => {
+                  if (!activeTabId) return;
+                  patchTab(activeTabId, {
+                    diffStyle: v === "split" ? "split" : "unified",
+                  });
+                }}
+              >
+                <SelectTrigger
+                  className="h-[30px] max-w-[min(148px,24vw)] text-xs"
+                  aria-label="Diff layout"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unified">Unified</SelectItem>
+                  <SelectItem value="split">Split</SelectItem>
+                </SelectContent>
+              </Select>
+            </label>
+            <label className="toolbar-git-commit-field">
+              <span className="toolbar-diff-field-label">Commit message</span>
+              <input
+                type="text"
+                className="toolbar-git-commit-input"
+                placeholder="Describe your changes"
+                value={gitCommitMessage}
+                disabled={gitActionBusy}
+                onChange={(e) => {
+                  if (!activeTabId) return;
+                  patchTab(activeTabId, {
+                    gitCommitMessage: e.target.value,
+                    gitActionError: null,
+                  });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    onGitCommit();
+                  }
+                }}
+              />
+            </label>
+            <div className="toolbar-git-actions">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={
+                  gitActionBusy ||
+                  !gitCommitMessage.trim() ||
+                  (gitStatus?.files.filter((f) => f.area === "staged").length ??
+                    0) === 0
+                }
+                onClick={onGitCommit}
+              >
+                Commit
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={gitActionBusy}
+                onClick={onGitPush}
+              >
+                Push
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </header>
 
       {fileError && (viewMode === "browse" || viewMode === "agent") ? (
@@ -1440,6 +1876,21 @@ export default function App() {
       {viewMode === "diff" && diffPatchError ? (
         <div className="error-banner" role="alert">
           {diffPatchError}
+        </div>
+      ) : null}
+      {viewMode === "git" && gitPatchError ? (
+        <div className="error-banner" role="alert">
+          {gitPatchError}
+        </div>
+      ) : null}
+      {viewMode === "git" && gitActionError ? (
+        <div className="error-banner" role="alert">
+          {gitActionError}
+        </div>
+      ) : null}
+      {viewMode === "git" && gitActionNotice ? (
+        <div className="git-notice-banner" role="status">
+          {gitActionNotice}
         </div>
       ) : null}
 

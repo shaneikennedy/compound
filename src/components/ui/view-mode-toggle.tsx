@@ -47,6 +47,19 @@ export function ViewModeToggle({
       <button
         type="button"
         disabled={disabled}
+        onClick={() => onChange("git")}
+        className={cn(
+          "h-7 shrink-0 rounded px-2 text-xs font-medium transition-colors",
+          value === "git"
+            ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-100 dark:text-zinc-900"
+            : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-500 dark:hover:text-zinc-200",
+        )}
+      >
+        Git
+      </button>
+      <button
+        type="button"
+        disabled={disabled}
         onClick={() => onChange("agent")}
         className={cn(
           "h-7 shrink-0 rounded px-2 text-xs font-medium transition-colors",

@@ -1,4 +1,18 @@
-export type ViewModeOption = "browse" | "diff" | "agent";
+export type ViewModeOption = "browse" | "diff" | "git" | "agent";
+
+export type GitChangeArea = "staged" | "unstaged" | "untracked";
+
+export type GitStatusFileEntry = {
+  path: string;
+  status: string;
+  oldPath: string | null;
+  area: GitChangeArea;
+};
+
+export type GitWorktreeStatus = {
+  branch: string | null;
+  files: GitStatusFileEntry[];
+};
 
 export type BranchDiffFileEntry = {
   path: string;
@@ -67,6 +81,18 @@ export type WorkspaceTabState = {
   diffPatchError: string | null;
   diffLoadGeneration: number;
   diffStyle: "unified" | "split";
+  gitStatus: GitWorktreeStatus | null;
+  gitStatusLoading: boolean;
+  gitStatusError: string | null;
+  gitSelectedArea: GitChangeArea | null;
+  gitPatchText: string | null;
+  gitPatchLoading: boolean;
+  gitPatchError: string | null;
+  gitLoadGeneration: number;
+  gitCommitMessage: string;
+  gitActionBusy: boolean;
+  gitActionError: string | null;
+  gitActionNotice: string | null;
   agentSession: AgentSession;
 };
 
@@ -103,6 +129,18 @@ export function createWorkspaceTab(id: string, workspaceIndex: number): Workspac
     diffPatchError: null,
     diffLoadGeneration: 0,
     diffStyle: "unified",
+    gitStatus: null,
+    gitStatusLoading: false,
+    gitStatusError: null,
+    gitSelectedArea: null,
+    gitPatchText: null,
+    gitPatchLoading: false,
+    gitPatchError: null,
+    gitLoadGeneration: 0,
+    gitCommitMessage: "",
+    gitActionBusy: false,
+    gitActionError: null,
+    gitActionNotice: null,
     agentSession: { kind: "unset" },
   };
 }
