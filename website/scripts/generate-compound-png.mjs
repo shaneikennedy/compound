@@ -2,11 +2,17 @@ import sharp from "sharp";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import toIco from "to-ico";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 const assetOut = path.join(root, "src", "assets", "compound.png");
 const publicOut = path.join(root, "public", "compound.png");
+/** Next.js App Router: PNG favicons must be named `icon.png`, not `favicon.png`. */
+const appIconOut = path.join(root, "src", "app", "icon.png");
+const appAppleIconOut = path.join(root, "src", "app", "apple-icon.png");
+/** `favicon.ico` is the only `.ico` convention and must live in `app/` (not `public/`). */
+const appFaviconOut = path.join(root, "src", "app", "favicon.ico");
 
 const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="640" height="640" viewBox="0 0 640 640" xmlns="http://www.w3.org/2000/svg">
@@ -38,7 +44,21 @@ const svg = `<?xml version="1.0" encoding="UTF-8"?>
 const png = await sharp(Buffer.from(svg)).png().toBuffer();
 await fs.mkdir(path.dirname(assetOut), { recursive: true });
 await fs.mkdir(path.dirname(publicOut), { recursive: true });
+await fs.mkdir(path.dirname(appIconOut), { recursive: true });
 await fs.writeFile(assetOut, png);
 await fs.writeFile(publicOut, png);
+
+const icon32 = await sharp(png).resize(32, 32).png().toBuffer();
+const icon180 = await sharp(png).resize(180, 180).png().toBuffer();
+const favicon16 = await sharp(png).resize(16, 16).png().toBuffer();
+const favicon32 = await sharp(png).resize(32, 32).png().toBuffer();
+
+await fs.writeFile(appIconOut, icon32);
+await fs.writeFile(appAppleIconOut, icon180);
+await fs.writeFile(appFaviconOut, await toIco([favicon16, favicon32]));
+
 console.log("Wrote", assetOut);
 console.log("Wrote", publicOut);
+console.log("Wrote", appIconOut);
+console.log("Wrote", appAppleIconOut);
+console.log("Wrote", appFaviconOut);

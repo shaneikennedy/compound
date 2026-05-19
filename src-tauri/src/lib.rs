@@ -1013,7 +1013,7 @@ pub struct GitPushResult {
     pub summary: String,
 }
 
-/// Push the current branch to its upstream (or set upstream on first push).
+/// Push the current branch to a remote branch of the same name (`git push origin HEAD`).
 #[tauri::command]
 fn git_push(root_path: String) -> Result<GitPushResult, String> {
     let root = validate_workspace_dir(&root_path)?;
@@ -1026,26 +1026,10 @@ fn git_push(root_path: String) -> Result<GitPushResult, String> {
         return Err("Cannot push from detached HEAD.".into());
     }
 
-    let upstream = run_git_stdout(
-        root,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{u}",
-        ],
-    );
-
-    let output = if upstream.is_ok() {
-        git_command_spawn(Some(Path::new(root)))
-            .arg("push")
-            .output()
-    } else {
-        git_command_spawn(Some(Path::new(root)))
-            .args(["push", "-u", "origin", &branch])
-            .output()
-    }
-    .map_err(|e| format!("Could not run git: {e}. Is git installed and on PATH?"))?;
+    let output = git_command_spawn(Some(Path::new(root)))
+        .args(["push", "origin", "HEAD"])
+        .output()
+        .map_err(|e| format!("Could not run git: {e}. Is git installed and on PATH?"))?;
 
     if !output.status.success() {
         return Err(git_error_message("push", &output));
